@@ -323,8 +323,34 @@ export class FillEngineInstance {
     if (!ok) {
       this.finished = true;
       this.succeeded = false;
+      return false;
     }
-    return ok;
+    if (!this.checkWordUniqueness()) {
+      this.finished = true;
+      this.succeeded = false;
+      return false;
+    }
+    return true;
+  }
+
+  // Check that no two decided slots of the same length share the same word.
+  private checkWordUniqueness(): boolean {
+    const usedByLength = new Map<number, Set<string>>();
+    for (const slot of this.slots) {
+      let decided = true;
+      let word = '';
+      for (const { row, col } of slot.cells) {
+        const m = this.cellMasks[this.cellIdx(row, col)];
+        if (m === 0 || (m & (m - 1)) !== 0) { decided = false; break; }
+        word += this.alphabet.getLetters(m)[0];
+      }
+      if (!decided) continue;
+      let seen = usedByLength.get(slot.len);
+      if (!seen) { seen = new Set<string>(); usedByLength.set(slot.len, seen); }
+      if (seen.has(word)) return false;
+      seen.add(word);
+    }
+    return true;
   }
 
   // Pick slot with fewest candidates that still has undecided cells

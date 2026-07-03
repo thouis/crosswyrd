@@ -112,6 +112,31 @@ const wordList4 = [
 ];
 const wordsByLength = new Map([[3, wordList3], [4, wordList4]]);
 
+// Small grid for chain-propagation tests:
+//   B W B      Row 1 across: (1,0),(1,1)  len 2
+//   W W B      Col 1 down:   (0,1),(1,1),(2,1)  len 3
+//   B W B
+const chainSize = 3;
+const chainBlacks: boolean[][] = [
+  [true,  false, true],
+  [false, false, true],
+  [true,  false, true],
+];
+const chainWordsByLength = new Map<number, string[]>([
+  [2, ['ba']],
+  [3, ['pax']],
+]);
+
+// Isolated-cell grid: only a single across slot, no crossings.
+//   B B B
+//   W W W
+//   B B B
+const isolatedBlacks: boolean[][] = [
+  [true, true, true],
+  [false, false, false],
+  [true, true, true],
+];
+
 describe('propagateConstraints', () => {
   test('no placed letters — all white cells have options', () => {
     const r = propagateConstraints({
@@ -151,6 +176,37 @@ describe('propagateConstraints', () => {
       placedLetters: new Map([['0,1', 'q']]),
     });
     expect(r.contradiction).toBe(true);
+  });
+
+  test('forced propagation chain: single letter forces cells 2+ hops away', () => {
+    // Place 'p' at (0,1) — position 0 of col 1 down.
+    // col 1 down has only 'pax' → forces (1,1)='a' and (2,1)='x'.
+    // (1,1)='a' is position 1 of row 1 across; only 'ba' fits → forces (1,0)='b'.
+    const r = propagateConstraints({
+      size: chainSize,
+      blacks: chainBlacks,
+      wordsByLength: chainWordsByLength,
+      placedLetters: new Map([['0,1', 'p']]),
+    });
+    expect(r.contradiction).toBe(false);
+    expect(r.options[1][1]).toEqual(['a']); // forced 2 hops away
+    expect(r.options[2][1]).toEqual(['x']); // also forced via col 1 down
+    expect(r.options[1][0]).toEqual(['b']); // forced 3 hops away
+  });
+
+  test('isolated cells (no crossings) produce no contradiction', () => {
+    // Row 1 has three white cells; all down runs are length 1 (filtered).
+    // No crossing constraints — just needs a 3-letter word.
+    const r = propagateConstraints({
+      size: 3, // isolatedBlacks is 3×3
+      blacks: isolatedBlacks,
+      wordsByLength: new Map([[3, wordList3]]),
+      placedLetters: new Map(),
+    });
+    expect(r.contradiction).toBe(false);
+    expect(r.options[1][0].length).toBeGreaterThan(0);
+    expect(r.options[1][1].length).toBeGreaterThan(0);
+    expect(r.options[1][2].length).toBeGreaterThan(0);
   });
 });
 
@@ -214,6 +270,42 @@ describe('FillEngineInstance', () => {
     expect(ok).toBe(false);
   });
 
+  test('setPlacedLetters rejects duplicate words in decided slots', () => {
+    // Chain grid: only one word per length; if two decided slots share a word, fail.
+    const chainEngine = createFillEngine({
+      size: chainSize,
+      blacks: chainBlacks,
+      wordsByLength: chainWordsByLength,
+    });
+    // Force col 1 down to 'pax' (place all three letters).
+    // Also force row 1 across to 'ba' → no duplicate, should be fine.
+    const ok1 = chainEngine.setPlacedLetters(new Map([
+      ['0,1', 'p'], ['1,1', 'a'], ['2,1', 'x'],
+      ['1,0', 'b'],
+    ]));
+    expect(ok1).toBe(true);
+
+    // Now try placing the same word ('ba') at a second slot — but in our chain
+    // grid there's only one len-2 slot and one len-3 slot, so no duplicate is
+    // possible. Instead we verify that a direct duplicate-word placement is caught
+    // by a second engine using a grid that has two len-3 slots, both forced to 'pax'.
+    //
+    // Use isolated grid (size 3, single-row) — no crossings, single len-3 slot.
+    // To test the duplicate check we need a grid with two len-3 slots of the
+    // same length forced to the same word.  Use the twoCorners grid where both
+    // row-0-across and row-3-across are len-3.  The only 3-letter word in the
+    // mini list is 'cat', so placing 'cat' at both forces a duplicate.
+    const miniWords = new Map([[3, ['cat']], [4, wordList4]]);
+    const dupEngine = createFillEngine({ size, blacks: twoCorners, wordsByLength: miniWords });
+    // Place 'cat' at row 0 across: (0,1)='c',(0,2)='a',(0,3)='t'
+    // AND 'cat' at row 3 across: (3,0)='c',(3,1)='a',(3,2)='t'
+    const ok2 = dupEngine.setPlacedLetters(new Map([
+      ['0,1','c'], ['0,2','a'], ['0,3','t'],
+      ['3,0','c'], ['3,1','a'], ['3,2','t'],
+    ]));
+    expect(ok2).toBe(false);
+  });
+
   test('getProgressUpdate has cellMasksLo and cellMasksHi', () => {
     const engine = createFillEngine({
       size,
@@ -262,6 +354,64 @@ describe('FillEngineInstance', () => {
     const result = engine.getResult();
     expect(result.success).toBe(false);
     expect(result.failureReason).toBe('timeout');
+  });
+
+  test('returns noValidFill when no consistent fill exists', () => {
+    // 'cat' for 3-letter slots; 'dogs' for 4-letter slots — incompatible crossings
+    const engine = createFillEngine({
+      size,
+      blacks: twoCorners,
+      wordsByLength: new Map([[3, ['cat']], [4, ['dogs']]]),
+      seed: 1,
+    });
+    let done = false;
+    for (let i = 0; i < 200 && !done; i++) done = engine.step(10);
+    const result = engine.getResult();
+    expect(result.success).toBe(false);
+    expect(result.failureReason).toBe('noValidFill');
+  });
+
+  test('4×4 all-white grid fills successfully', () => {
+    const allWhite = Array.from({ length: 4 }, () => Array(4).fill(false) as boolean[]);
+    const engine = createFillEngine({
+      size: 4,
+      blacks: allWhite,
+      wordsByLength: new Map([[4, wordList4]]),
+      seed: 42,
+    });
+    let done = false;
+    for (let i = 0; i < 10000 && !done; i++) done = engine.step(10);
+    const result = engine.getResult();
+    expect(result.success).toBe(true);
+    for (let r = 0; r < 4; r++)
+      for (let c = 0; c < 4; c++)
+        expect(result.grid[r][c]).toMatch(/^[a-z]$/);
+  });
+
+  test('successful fill contains no duplicate words', () => {
+    const engine = createFillEngine({ size, blacks: twoCorners, wordsByLength, seed: 1 });
+    let done = false;
+    for (let i = 0; i < 1000 && !done; i++) done = engine.step(10);
+    const result = engine.getResult();
+    expect(result.success).toBe(true);
+    const usedWords = result.slots.map(slot =>
+      slot.cells.map(({ row, col }) => result.grid[row][col]).join('')
+    );
+    expect(new Set(usedWords).size).toBe(usedWords.length);
+  });
+
+  test('FillProgressUpdate: filledCells <= totalCells throughout fill', () => {
+    const engine = createFillEngine({ size, blacks: twoCorners, wordsByLength, seed: 1 });
+    let done = false;
+    while (!done) {
+      const upd = engine.getProgressUpdate();
+      expect(upd.filledCells).toBeLessThanOrEqual(upd.totalCells);
+      expect(upd.totalCells).toBe(14); // 4×4 minus 2 black corners
+      done = engine.step(10);
+    }
+    const result = engine.getResult();
+    expect(result.success).toBe(true);
+    expect(engine.getProgressUpdate().filledCells).toBe(14);
   });
 });
 
