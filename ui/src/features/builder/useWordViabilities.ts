@@ -111,14 +111,14 @@ export default function useWordViabilities(
 
         // Compute a new wave in the background
         const newWave = await WFCWorkerRef.current.withTileUpdates(
-          dictionary,
           wave,
           puzzle,
           _.map(selectedTilesState.locations, ({ row, column }, index) => ({
             row,
             column,
             value: word[index] as LetterType,
-          }))
+          })),
+          []
         );
 
         if (

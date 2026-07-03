@@ -1,6 +1,6 @@
 import { Remote, wrap } from 'comlink';
 import _ from 'lodash';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { MutableRefObject, useCallback, useEffect, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 
 import {
@@ -33,6 +33,29 @@ export interface TileUpdateType {
   row: number;
   column: number;
   value: TileValueType;
+}
+
+export type FillWaveUpdate =
+  | { done: false; wave: WaveType }
+  | { done: true; success: false; failureReason: 'timeout' | 'maxSteps' | 'noValidFill' | 'contradiction' }
+  | { done: true; success: true; grid: string[][] };
+
+export function useWordBankSync(
+  workerRef: MutableRefObject<Remote<WFCWorkerAPIType> | null>,
+  wordBankWords: string[]
+): void {
+  const prevBankWordsRef = useRef<string[]>([]);
+  useEffect(() => {
+    if (!workerRef.current) return;
+    const prev = prevBankWordsRef.current;
+    const prevSet = new Set(prev);
+    const nextSet = new Set(wordBankWords);
+    const added = wordBankWords.filter(w => !prevSet.has(w));
+    const removed = prev.filter(w => !nextSet.has(w));
+    if (added.length > 0) workerRef.current.addWordsToIndex(added);
+    if (removed.length > 0) workerRef.current.removeWordsFromIndex(removed);
+    prevBankWordsRef.current = wordBankWords;
+  }, [wordBankWords]); // eslint-disable-line react-hooks/exhaustive-deps
 }
 
 export function findWordOptions(
@@ -103,7 +126,7 @@ export function waveFromPuzzle(puzzle: CrosswordPuzzleType): WaveType {
         row: rowIndex,
         column: columnIndex,
         options: options(tile),
-        entropy: computeEntropy(options(tile)),
+        entropy: solid(tile) ? 0 : options(tile).length <= 1 ? 0 : Math.log(options(tile).length),
         solid: solid(tile),
       }))
     ),
@@ -148,12 +171,17 @@ interface ReturnType {
   ) => Promise<UpdateWaveReturnType>;
   setWaveState: (wave: WaveType, puzzle: CrosswordPuzzleType) => void;
   busy: boolean;
+  wordIndexReady: boolean;
+  resetWordIndex: () => Promise<void>;
+  WFCWorkerRef: MutableRefObject<Remote<WFCWorkerAPIType> | null>;
 }
 
 export default function useWaveFunctionCollapse(
-  puzzle: CrosswordPuzzleType
+  puzzle: CrosswordPuzzleType,
+  wordBankWords: string[] = []
 ): ReturnType {
   const WFCWorkerRef = useRef<Remote<WFCWorkerAPIType> | null>(null);
+  const [wordIndexReady, setWordIndexReady] = useState(false);
   // A nice boolean for clients to see if we are accepting new wave-update
   // requests
   const [busy, setBusy] = useState(false);
@@ -197,8 +225,11 @@ export default function useWaveFunctionCollapse(
 
   // Instantiate WFCWorker
   useEffect(() => {
-    WFCWorkerRef.current = wrap<Remote<WFCWorkerAPIType>>(new WFCWorker());
+    const worker = wrap<Remote<WFCWorkerAPIType>>(new WFCWorker());
+    WFCWorkerRef.current = worker;
+    worker.waitForIndex().then(() => setWordIndexReady(true));
   }, []);
+  useWordBankSync(WFCWorkerRef, wordBankWords);
 
   const updateWaveWithTileUpdates = useCallback(
     async (
@@ -215,10 +246,10 @@ export default function useWaveFunctionCollapse(
       // set the wave to a basic collapsed state.
       const newWave = fillAssistActive
         ? await WFCWorkerRef.current.withTileUpdates(
-            dictionary,
             wave,
             puzzle,
-            tileUpdates
+            tileUpdates,
+            []
           )
         : waveFromPuzzleWithLettersCollapsed(puzzle);
       const newWaveWithVersion = {
@@ -272,6 +303,7 @@ export default function useWaveFunctionCollapse(
       // hasn't been seen before and the word is full-length (i.e., it's not a
       // word fragment, which we wouldn't want in the dictionary)
       const newWords = wordsNotInDictionary(puzzle, wave, dictionary);
+      if (newWords.length > 0) WFCWorkerRef.current?.addWordsToIndex(newWords);
       const possiblyUpdatedDictionary =
         (newWords.length > 0 && addWordsToDictionary(newWords)) || dictionary;
 
@@ -298,11 +330,21 @@ export default function useWaveFunctionCollapse(
     [dispatch]
   );
 
+  const resetWordIndex = useCallback((): Promise<void> => {
+    setWordIndexReady(false);
+    return (WFCWorkerRef.current?.resetIndex() ?? Promise.resolve()).then(() =>
+      setWordIndexReady(true)
+    );
+  }, []);
+
   return {
     wave,
     updateWaveWithTileUpdates,
     updateWave,
     setWaveState,
     busy,
+    wordIndexReady,
+    resetWordIndex,
+    WFCWorkerRef,
   };
 }
