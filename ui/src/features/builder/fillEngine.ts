@@ -6,7 +6,7 @@
 import { Alphabet, LetterMask, MutableLetterMask, ENGLISH } from './Alphabet';
 
 // ---------------------------------------------------------------------------
-// Inline LetterMask helpers (module-scope; hi=0 invariant holds through PR6a)
+// Inline LetterMask helpers (module-scope)
 // ---------------------------------------------------------------------------
 
 const EMPTY_MASK: LetterMask = { lo: 0, hi: 0 };
@@ -17,8 +17,10 @@ function maskSingle(m: LetterMask): boolean {
 }
 function maskAnd(a: LetterMask, b: LetterMask): LetterMask { return { lo: a.lo & b.lo, hi: a.hi & b.hi }; }
 function maskOr(a: LetterMask, b: LetterMask): LetterMask { return { lo: a.lo | b.lo, hi: a.hi | b.hi }; }
+function maskMutableOr(acc: MutableLetterMask, m: LetterMask): void { acc.lo |= m.lo; acc.hi |= m.hi; }
 function maskContains(m: LetterMask, bit: LetterMask): boolean { return (m.lo & bit.lo) !== 0 || (m.hi & bit.hi) !== 0; }
 function maskEquals(a: LetterMask, b: LetterMask): boolean { return a.lo === b.lo && a.hi === b.hi; }
+function maskHasMultiple(m: LetterMask): boolean { return !maskEmpty(m) && !maskSingle(m); }
 
 // ---------------------------------------------------------------------------
 // Public API types
@@ -300,9 +302,7 @@ export class FillEngineInstance {
         for (let p = 0; p < slot.len; p++) {
           union.lo = 0; union.hi = 0;
           for (const w of filtered) {
-            const bit = this.alphabet.forLetter(w[p]);
-            union.lo |= bit.lo;
-            union.hi |= bit.hi;
+            maskMutableOr(union, this.alphabet.forLetter(w[p]));
           }
           const idx = this.cellIdx(slot.cells[p].row, slot.cells[p].col);
           const oldMask = this.cellMasks[idx];
@@ -360,8 +360,8 @@ export class FillEngineInstance {
       let word = '';
       for (const { row, col } of slot.cells) {
         const m = this.cellMasks[this.cellIdx(row, col)];
-        if (maskEmpty(m) || !maskSingle(m)) { decided = false; break; }
-        word += this.alphabet.getLetters(m)[0];
+        if (!maskSingle(m)) { decided = false; break; }
+        word += this.alphabet.getSingleLetter(m);
       }
       if (!decided) continue;
       let seen = usedByLength.get(slot.len);
@@ -382,7 +382,7 @@ export class FillEngineInstance {
       let undecided = false;
       for (const { row, col } of slot.cells) {
         const m = this.cellMasks[this.cellIdx(row, col)];
-        if (!maskEmpty(m) && !maskSingle(m)) { undecided = true; break; }
+        if (maskHasMultiple(m)) { undecided = true; break; }
       }
       if (!undecided) continue;
       const n = this.slotCandidates[si].length;
@@ -503,7 +503,7 @@ export class FillEngineInstance {
         if (this.blacks[r][c]) continue;
         total++;
         const m = this.cellMasks[this.cellIdx(r, c)];
-        if (!maskEmpty(m) && maskSingle(m)) filled++;
+        if (maskSingle(m)) filled++;
       }
     }
     return { filledCells: filled, totalCells: total };
@@ -535,8 +535,8 @@ export class FillEngineInstance {
       for (let c = 0; c < size; c++) {
         if (this.blacks[r][c]) { row.push('.'); continue; }
         const m = this.cellMasks[this.cellIdx(r, c)];
-        if (!maskEmpty(m) && maskSingle(m)) {
-          row.push(this.alphabet.getLetters(m)[0]);
+        if (maskSingle(m)) {
+          row.push(this.alphabet.getSingleLetter(m));
         } else row.push(' ');
       }
       grid.push(row);
