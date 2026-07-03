@@ -23,6 +23,12 @@ import {
 } from './fillEngine';
 
 // ---------------------------------------------------------------------------
+// Debug
+// ---------------------------------------------------------------------------
+
+const DEBUG_WAVES = false;
+
+// ---------------------------------------------------------------------------
 // Module state
 // ---------------------------------------------------------------------------
 
@@ -312,11 +318,26 @@ const WFCWorkerAPI: WFCWorkerAPIType = {
       return;
     }
 
+    const TARGET_FRAME_MS = 100; // 10fps
+    let lastUpdateTime = performance.now();
+    let updateCount = 0;
+
+    const sendWaveUpdate = (wave: WaveType) => {
+      updateCount++;
+      if (DEBUG_WAVES) {
+        const firstEl = wave.elements.flat().find(e => !e.solid);
+        console.log(`[worker wave #${updateCount}] first non-solid: options=${firstEl?.options.length ?? '?'} entropy=${firstEl?.entropy.toFixed(3) ?? '?'}`);
+      }
+      onProgress({ done: false, wave });
+    };
+
     // Send initial wave (constraint-propagated state) before stepping
     {
       const upd = engine.getProgressUpdate();
       const wave = masksToWave(upd.cellMasksLo, upd.cellMasksHi, blacks, workerAlphabet);
-      onProgress({ done: false, wave });
+      sendWaveUpdate(wave);
+      lastUpdateTime = performance.now();
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
     }
 
     while (true) {
@@ -325,24 +346,29 @@ const WFCWorkerAPI: WFCWorkerAPIType = {
         return;
       }
       const done = engine.step(10);
-      const upd = engine.getProgressUpdate();
-      const wave = masksToWave(upd.cellMasksLo, upd.cellMasksHi, blacks, workerAlphabet);
-      if (done) {
-        const result = engine.getResult();
-        if (result.success) {
-          onProgress({ done: true, success: true, grid: result.grid });
-        } else {
-          onProgress({
-            done: true,
-            success: false,
-            failureReason: (result.failureReason ?? 'noValidFill') as
-              'timeout' | 'maxSteps' | 'noValidFill' | 'contradiction',
-          });
+
+      const now = performance.now();
+      if (done || (now - lastUpdateTime) >= TARGET_FRAME_MS) {
+        const upd = engine.getProgressUpdate();
+        const wave = masksToWave(upd.cellMasksLo, upd.cellMasksHi, blacks, workerAlphabet);
+        if (done) {
+          const result = engine.getResult();
+          if (result.success) {
+            onProgress({ done: true, success: true, grid: result.grid });
+          } else {
+            onProgress({
+              done: true,
+              success: false,
+              failureReason: (result.failureReason ?? 'noValidFill') as
+                'timeout' | 'maxSteps' | 'noValidFill' | 'contradiction',
+            });
+          }
+          return;
         }
-        return;
+        sendWaveUpdate(wave);
+        lastUpdateTime = now;
+        await new Promise<void>(resolve => setTimeout(resolve, 0));
       }
-      onProgress({ done: false, wave });
-      await new Promise<void>(resolve => setTimeout(resolve, 0));
     }
   },
 
