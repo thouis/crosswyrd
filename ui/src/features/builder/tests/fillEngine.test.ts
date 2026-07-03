@@ -415,6 +415,111 @@ describe('FillEngineInstance', () => {
   });
 });
 
+describe('AC propagation (PR7)', () => {
+  test('initial propagation determines all cells when only one word per slot', () => {
+    // Chain grid: single candidate per slot → constructor propagation fully solves it.
+    const engine = createFillEngine({
+      size: chainSize,
+      blacks: chainBlacks,
+      wordsByLength: chainWordsByLength,
+      seed: 1,
+    });
+    const opts = engine.getOptions();
+    expect(opts[0][1]).toEqual(['p']); // col-1-down pos 0
+    expect(opts[1][1]).toEqual(['a']); // shared cell
+    expect(opts[2][1]).toEqual(['x']); // col-1-down pos 2
+    expect(opts[1][0]).toEqual(['b']); // row-1-across pos 0
+  });
+
+  test('setPlacedLetters propagates constraint chain 3+ hops', () => {
+    // Place 'p' at (0,1):
+    //  → col-1-down loses 'qex' (starts with q) → support for 'e' at col-1-down pos 1 hits 0
+    //  → cell(1,1) loses 'e' → row-1-across loses 'ce' (has 'e' at pos 1)
+    //  → support for 'c' at row-1-across pos 0 hits 0 → cell(1,0) loses 'c'
+    const engine = createFillEngine({
+      size: chainSize,
+      blacks: chainBlacks,
+      wordsByLength: new Map([
+        [2, ['ba', 'ce']],
+        [3, ['pax', 'qex']],
+      ]),
+      seed: 1,
+    });
+    const ok = engine.setPlacedLetters(new Map([['0,1', 'p']]));
+    expect(ok).toBe(true);
+    const opts = engine.getOptions();
+    expect(opts[1][1]).toEqual(['a']); // forced 2 hops from (0,1)
+    expect(opts[2][1]).toEqual(['x']); // forced via col-1-down
+    expect(opts[1][0]).toEqual(['b']); // forced 3 hops from (0,1)
+  });
+
+  test('forced slot: word used in one slot cannot be reused in same-length slot', () => {
+    // Placing 'cat' in both row-0-across and row-3-across → duplicate → contradiction.
+    // This exercises propagateForcedSlot: once row-0-across is forced to 'cat',
+    // 'cat' is removed from all same-length slots so placing it there contradicts.
+    const miniWords = new Map([[3, ['cat', 'dog', 'elf', 'fur']], [4, wordList4]]);
+    const engine = createFillEngine({ size, blacks: twoCorners, wordsByLength: miniWords, seed: 1 });
+    const ok = engine.setPlacedLetters(new Map([
+      ['0,1', 'c'], ['0,2', 'a'], ['0,3', 't'],
+      ['3,0', 'c'], ['3,1', 'a'], ['3,2', 't'],
+    ]));
+    expect(ok).toBe(false); // duplicate word → contradiction
+  });
+
+  test('support-count propagation: removing last word supporting a letter removes that letter from crossing cell', () => {
+    // chain grid, two options per slot:
+    //   col-1-down: 'pax' or 'pay' (both have 'a' at position 1)
+    //   row-1-across: 'ba' or 'ca' (both have 'a' at position 1)
+    // Position (1,1) has 'a' from both slots → options=['a']
+    // Position (1,0) has {b,c} from row-1-across → options=['b','c']
+    const engine = createFillEngine({
+      size: chainSize,
+      blacks: chainBlacks,
+      wordsByLength: new Map([
+        [2, ['ba', 'ca']],
+        [3, ['pax', 'pay']],
+      ]),
+      seed: 1,
+    });
+    // Place 'p' at (0,1) → forces col-1-down to 'pax' or 'pay'
+    // Both have 'a' at p=1 → cell(1,1) still {'a'} ✓
+    // Place 'x' at (2,1) → forces col-1-down to 'pax' (only one with 'x' at p=2)
+    // → cell(1,1) = {'a'}, cell(1,0) still {b,c}
+    const ok = engine.setPlacedLetters(new Map([['2,1', 'x']]));
+    expect(ok).toBe(true);
+    const opts = engine.getOptions();
+    expect(opts[0][1]).toEqual(['p']); // col-1-down forced to 'pax', position 0='p'
+    expect(opts[1][1]).toEqual(['a']);
+  });
+
+  test('contradiction: placing letter with no supporting word fails immediately', () => {
+    const engine = createFillEngine({
+      size: chainSize,
+      blacks: chainBlacks,
+      wordsByLength: chainWordsByLength,
+      seed: 1,
+    });
+    // Place 'z' at (0,1) — no word starts with 'z'
+    const ok = engine.setPlacedLetters(new Map([['0,1', 'z']]));
+    expect(ok).toBe(false);
+  });
+
+  test('initial propagation excludes letters with no support in any candidate', () => {
+    // No word in the list contains 'q' → no cell should ever offer 'q' as an option.
+    const noQwords = wordList3.filter(w => !w.includes('q'));
+    const r = propagateConstraints({
+      size: 3,
+      blacks: isolatedBlacks,
+      wordsByLength: new Map([[3, noQwords]]),
+      placedLetters: new Map(),
+    });
+    expect(r.contradiction).toBe(false);
+    for (let c = 0; c < 3; c++) {
+      expect(r.options[1][c]).not.toContain('q');
+    }
+  });
+});
+
 describe('buildSlotTopology', () => {
   test('4×4 two-corner grid has 4 across and 4 down slots', () => {
     const topo = buildSlotTopology(size, twoCorners);
