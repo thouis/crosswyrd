@@ -1,4 +1,4 @@
-import { Alphabet, LetterMask, ENGLISH } from './Alphabet';
+import { Alphabet, LetterMask, ENGLISH } from '../Alphabet';
 
 // ---------------------------------------------------------------------------
 // ENGLISH export

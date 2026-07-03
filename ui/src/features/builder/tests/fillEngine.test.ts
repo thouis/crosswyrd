@@ -3,8 +3,8 @@ import {
   createFillEngine,
   propagateConstraints,
   buildSlotTopology,
-} from './fillEngine';
-import { ENGLISH } from './Alphabet';
+} from '../fillEngine';
+import { ENGLISH } from '../Alphabet';
 
 // 4×4 grid with top-left and bottom-right corners black:
 //   B W W W

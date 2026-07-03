@@ -5,7 +5,7 @@
  * calculation, word viability) without exercising the Web Worker itself.
  */
 
-import { propagateConstraints } from './fillEngine';
+import { propagateConstraints } from '../fillEngine';
 
 // ---------------------------------------------------------------------------
 // Grid and word-list fixtures (same as fillEngine.test.ts)

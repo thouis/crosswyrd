@@ -1,5 +1,5 @@
-import { ENGLISH } from './Alphabet';
-import { buildWordIndex, addWords } from './wordIndex';
+import { ENGLISH } from '../Alphabet';
+import { buildWordIndex, addWords } from '../wordIndex';
 
 // ---------------------------------------------------------------------------
 // buildWordIndex — grouping and sorting
@@ -147,7 +147,7 @@ test('addWords ignores words with non-alphabet characters', () => {
 // ---------------------------------------------------------------------------
 
 test('buildWordIndex with custom alphabet excludes words with foreign letters', () => {
-  const alpha = new (require('./Alphabet').Alphabet)(['a', 'b', 'c', 'd', 'e']);
+  const alpha = new (require('../Alphabet').Alphabet)(['a', 'b', 'c', 'd', 'e']);
   const idx = buildWordIndex(['abc', 'abe', 'xyz'], alpha);
   expect(idx.words[3]).toEqual(['abc', 'abe']);
   expect(idx.words[3]).not.toContain('xyz');

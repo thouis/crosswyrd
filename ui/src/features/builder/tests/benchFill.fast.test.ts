@@ -1,29 +1,33 @@
 /**
- * Fill engine slow regression benchmark.
- * 4 hard grids × 3 seeds at 20s timeout = up to 12 runs.
+ * Fill engine fast regression benchmark.
+ * 28 grids × 3 seeds at 1s timeout = up to 84 runs.
  *
  * Outcomes: Y=success, T=timeout, M=maxSteps, N=no-valid-fill (unexpected = bug)
  *
- * PR3 baseline: 3/12 Y, p50=6470ms
+ * PR3 baseline: 5/84 Y, p50=455ms p90=699ms
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import _ from 'lodash';
-import { fillGrid } from './fillEngine';
-import { groupWordsByLength } from './wordIndex';
+import { fillGrid } from '../fillEngine';
+import { groupWordsByLength } from '../wordIndex';
 
-const HARD_Y_BASELINE = 3;
-const HARD_FAIL_THRESHOLD = 1;
+const Y_BASELINE = 5;
+const HARD_FAIL_THRESHOLD = 3;
 const KNOWN_UNSOLVABLE = new Set<number>();
 
-const HARD_TIMEOUT_MS = 20000;
+const TIMEOUT_MS = 1000;
 const MAX_STEPS = 400000;
 const SEEDS_PER_GRID = 3;
 
-const HARD_GRID_INDICES = [808, 923, 1154, 1347];
+const GRID_INDICES = [
+  173, 250, 269, 288, 442, 500, 577, 615, 654, 673, 712, 731, 866,
+  904, 943, 1000, 1039, 1077, 1135, 1173, 1193, 1212, 1270,
+  1289, 1327, 1385, 1481, 1520,
+];
 
-describe('fill engine slow benchmark', () => {
+describe('fill engine fast benchmark', () => {
   jest.setTimeout(600000);
 
   let wordsByLength: Map<number, string[]>;
@@ -31,7 +35,7 @@ describe('fill engine slow benchmark', () => {
   let bankWords: string[];
 
   beforeAll(() => {
-    const publicDir = path.join(__dirname, '../../../public');
+    const publicDir = path.join(__dirname, '../../../../public');
     const wordList: string[] = JSON.parse(
       fs.readFileSync(path.join(publicDir, 'word_list.json'), 'utf8')
     );
@@ -51,14 +55,14 @@ describe('fill engine slow benchmark', () => {
       .slice(0, 164);
   });
 
-  it(`${HARD_GRID_INDICES.length} grids × ${SEEDS_PER_GRID} seeds at ${HARD_TIMEOUT_MS / 1000}s: Y >= ${HARD_FAIL_THRESHOLD} (baseline ${HARD_Y_BASELINE})`, () => {
+  it(`${GRID_INDICES.length} grids × ${SEEDS_PER_GRID} seeds at ${TIMEOUT_MS}ms: Y >= ${HARD_FAIL_THRESHOLD} (baseline ${Y_BASELINE})`, () => {
     const size = 15;
     let successes = 0;
-    const total = HARD_GRID_INDICES.length * SEEDS_PER_GRID;
+    const total = GRID_INDICES.length * SEEDS_PER_GRID;
     const unexpectedN: string[] = [];
     const allSuccessMs: number[] = [];
 
-    for (const gridIdx of HARD_GRID_INDICES) {
+    for (const gridIdx of GRID_INDICES) {
       const g = gridList[gridIdx];
       const blacks = _.times(size, r => _.times(size, c => g.grid[r * size + c] === '.'));
       const seeds = _.times(SEEDS_PER_GRID, i => gridIdx * (i + 1));
@@ -68,7 +72,7 @@ describe('fill engine slow benchmark', () => {
 
       for (const seed of seeds) {
         const t0 = performance.now();
-        const r = fillGrid({ size, blacks, wordsByLength, bankWords, seed, timeoutMs: HARD_TIMEOUT_MS, maxSteps: MAX_STEPS });
+        const r = fillGrid({ size, blacks, wordsByLength, bankWords, seed, timeoutMs: TIMEOUT_MS, maxSteps: MAX_STEPS });
         const elapsedMs = performance.now() - t0;
         times.push(elapsedMs);
         let outcome: string;
@@ -89,17 +93,14 @@ describe('fill engine slow benchmark', () => {
     }
 
     allSuccessMs.sort((a, b) => a - b);
-    if (allSuccessMs.length > 0) {
-      const p50 = allSuccessMs[Math.floor(allSuccessMs.length * 0.5)];
-      console.log(`Total: ${successes}/${total} Y  p50=${p50.toFixed(0)}ms max=${allSuccessMs[allSuccessMs.length - 1].toFixed(0)}ms`);
-    } else {
-      console.log(`Total: ${successes}/${total} Y`);
-    }
+    const p50 = allSuccessMs.length > 0 ? allSuccessMs[Math.floor(allSuccessMs.length * 0.5)] : 0;
+    const p90 = allSuccessMs.length > 0 ? allSuccessMs[Math.floor(allSuccessMs.length * 0.9)] : 0;
+    console.log(`Total: ${successes}/${total} Y  p50=${p50.toFixed(0)}ms p90=${p90.toFixed(0)}ms max=${allSuccessMs.length > 0 ? allSuccessMs[allSuccessMs.length - 1].toFixed(0) : 'n/a'}ms`);
 
     if (unexpectedN.length > 0)
       console.error(`UNEXPECTED N (correctness bug): ${unexpectedN.join(', ')}`);
-    if (successes < HARD_Y_BASELINE)
-      console.warn(`⚠️  REGRESSION: ${successes} Y < baseline ${HARD_Y_BASELINE}${successes < HARD_FAIL_THRESHOLD ? ' — HARD FAIL' : ''}`);
+    if (successes < Y_BASELINE)
+      console.warn(`⚠️  REGRESSION: ${successes} Y < baseline ${Y_BASELINE}${successes < HARD_FAIL_THRESHOLD ? ' — HARD FAIL' : ''}`);
 
     expect(unexpectedN).toHaveLength(0);
     expect(successes).toBeGreaterThanOrEqual(HARD_FAIL_THRESHOLD);
