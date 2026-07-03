@@ -46,6 +46,27 @@ export function buildWordIndex(wordList: string[], alphabet: Alphabet = ENGLISH)
 }
 
 // ---------------------------------------------------------------------------
+// Convenience: group a word list by length (filtered to alphabet letters)
+// ---------------------------------------------------------------------------
+
+export function groupWordsByLength(words: string[], alphabet: Alphabet = ENGLISH): Map<number, string[]> {
+  const alphaSet = new Set(alphabet.letters);
+  const m = new Map<number, string[]>();
+  for (const w of words) {
+    if (w.length === 0) continue;
+    let ok = true;
+    for (let i = 0; i < w.length; i++) {
+      if (!alphaSet.has(w[i])) { ok = false; break; }
+    }
+    if (!ok) continue;
+    let arr = m.get(w.length);
+    if (!arr) { arr = []; m.set(w.length, arr); }
+    arr.push(w);
+  }
+  return m;
+}
+
+// ---------------------------------------------------------------------------
 // Incremental update — append new words (e.g. word bank) without full rebuild
 // ---------------------------------------------------------------------------
 

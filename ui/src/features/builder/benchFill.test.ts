@@ -15,7 +15,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import _ from 'lodash';
-import { fillGrid, groupWordsByLength } from './fillEngine';
+import { fillGrid } from './fillEngine';
+import { groupWordsByLength } from './wordIndex';
 
 // ---------------------------------------------------------------------------
 // Baselines (update after engine changes)
