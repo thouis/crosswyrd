@@ -25,7 +25,7 @@ const VERSION_BADGE: React.CSSProperties = {
 function App() {
   return (
     <>
-      <span style={VERSION_BADGE}>pr6a</span>
+      <span style={VERSION_BADGE}>pr6b</span>
       {devMode() && (
         <Helmet>
           <link rel="icon" href={`${process.env.PUBLIC_URL}/favicon-dev.ico`} />

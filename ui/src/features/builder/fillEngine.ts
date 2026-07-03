@@ -1,6 +1,6 @@
 /**
- * PR6a fill engine — uses LetterMask = {lo, hi} struct (hi always 0 until PR6b).
- * Simple string-based crossword filling with backtracking. No optimizations; correctness first.
+ * Fill engine — simple string-based crossword filling with backtracking.
+ * Uses LetterMask = {lo, hi} for up to 64-letter alphabets. No optimizations; correctness first.
  */
 
 import { Alphabet, LetterMask, MutableLetterMask, ENGLISH } from './Alphabet';
@@ -11,7 +11,10 @@ import { Alphabet, LetterMask, MutableLetterMask, ENGLISH } from './Alphabet';
 
 const EMPTY_MASK: LetterMask = { lo: 0, hi: 0 };
 function maskEmpty(m: LetterMask): boolean { return m.lo === 0 && m.hi === 0; }
-function maskSingle(m: LetterMask): boolean { return m.lo !== 0 && (m.lo & (m.lo - 1)) === 0 && m.hi === 0; }
+function maskSingle(m: LetterMask): boolean {
+  return (m.lo !== 0 && (m.lo & (m.lo - 1)) === 0 && m.hi === 0) ||
+         (m.lo === 0 && m.hi !== 0 && (m.hi & (m.hi - 1)) === 0);
+}
 function maskAnd(a: LetterMask, b: LetterMask): LetterMask { return { lo: a.lo & b.lo, hi: a.hi & b.hi }; }
 function maskOr(a: LetterMask, b: LetterMask): LetterMask { return { lo: a.lo | b.lo, hi: a.hi | b.hi }; }
 function maskContains(m: LetterMask, bit: LetterMask): boolean { return (m.lo & bit.lo) !== 0 || (m.hi & bit.hi) !== 0; }
@@ -510,10 +513,11 @@ export class FillEngineInstance {
     const { filledCells, totalCells } = this.countCells();
     const n = this.size * this.size;
     const lo = new Int32Array(n);
-    for (let i = 0; i < n; i++) lo[i] = this.cellMasks[i].lo;
+    const hi = new Int32Array(n);
+    for (let i = 0; i < n; i++) { lo[i] = this.cellMasks[i].lo; hi[i] = this.cellMasks[i].hi; }
     return {
       cellMasksLo: lo,
-      cellMasksHi: new Int32Array(n),
+      cellMasksHi: hi,
       steps: this.steps,
       backtracks: this.backtracks,
       done: this.finished,

@@ -21,13 +21,18 @@ test('custom alphabet has correct size and letters', () => {
   expect(alpha.letters).toEqual(['x', 'y', 'z']);
 });
 
-test('constructor throws when alphabet exceeds 32 letters', () => {
-  const letters = 'abcdefghijklmnopqrstuvwxyzabcdefg'.split('').slice(0, 33);
+test('constructor throws when alphabet exceeds 64 letters', () => {
+  const letters = Array.from({ length: 65 }, (_, i) => String.fromCharCode(65 + (i % 26)));
   expect(() => new Alphabet(letters)).toThrow();
 });
 
 test('constructor accepts exactly 32 letters', () => {
-  const letters = 'abcdefghijklmnopqrstuvwxyzabcdef'.split('').slice(0, 32);
+  const letters = Array.from({ length: 32 }, (_, i) => String.fromCharCode(97 + i));
+  expect(() => new Alphabet(letters)).not.toThrow();
+});
+
+test('constructor accepts exactly 64 letters', () => {
+  const letters = Array.from({ length: 64 }, (_, i) => String.fromCharCode(0x41 + i));
   expect(() => new Alphabet(letters)).not.toThrow();
 });
 
@@ -210,4 +215,112 @@ test('onlyLetterAt(i) matches forLetter(letterAt(i))', () => {
   for (let i = 0; i < 26; i++) {
     expect(ENGLISH.onlyLetterAt(i)).toEqual(ENGLISH.forLetter(ENGLISH.letterAt(i)));
   }
+});
+
+// ---------------------------------------------------------------------------
+// 64-bit: lo/hi boundary tests
+// ---------------------------------------------------------------------------
+
+const ALPHA64 = new Alphabet(Array.from({ length: 64 }, (_, i) => String.fromCharCode(0x41 + i)));
+const ALPHA36 = new Alphabet(Array.from({ length: 36 }, (_, i) =>
+  i < 26 ? String.fromCharCode(97 + i) : String.fromCharCode(48 + i - 26)
+));
+
+test('64-letter alphabet: forLetter at index 31 (last lo bit)', () => {
+  const m = ALPHA64.forLetter(ALPHA64.letterAt(31));
+  expect(m).toEqual({ lo: 1 << 31, hi: 0 });
+});
+
+test('64-letter alphabet: forLetter at index 32 (first hi bit)', () => {
+  const m = ALPHA64.forLetter(ALPHA64.letterAt(32));
+  expect(m).toEqual({ lo: 0, hi: 1 });
+});
+
+test('64-letter alphabet: forLetter at index 63 (last hi bit)', () => {
+  const m = ALPHA64.forLetter(ALPHA64.letterAt(63));
+  expect(m).toEqual({ lo: 0, hi: 1 << 31 });
+});
+
+test('64-letter alphabet: ALL has lo=-1 and hi=-1', () => {
+  expect(ALPHA64.ALL).toEqual({ lo: -1, hi: -1 });
+});
+
+test('36-letter alphabet: ALL has lo=-1 and hi=(1<<4)-1=15', () => {
+  expect(ALPHA36.ALL).toEqual({ lo: -1, hi: (1 << 4) - 1 });
+});
+
+test('isSingleLetter: hi-only mask', () => {
+  const m = ALPHA64.forLetter(ALPHA64.letterAt(32)); // {lo:0, hi:1}
+  expect(ALPHA64.isSingleLetter(m)).toBe(true);
+});
+
+test('isSingleLetter: mixed lo+hi mask is not single', () => {
+  expect(ALPHA64.isSingleLetter({ lo: 1, hi: 1 })).toBe(false);
+});
+
+test('getSingleLetter at indices 0, 31, 32, 63', () => {
+  for (const i of [0, 31, 32, 63]) {
+    const ch = ALPHA64.letterAt(i);
+    expect(ALPHA64.getSingleLetter(ALPHA64.forLetter(ch))).toBe(ch);
+  }
+});
+
+test('getLetters: sparse hi mask returns correct letters in order', () => {
+  // bits 32 and 34 set → letters at index 32 and 34
+  const m: LetterMask = { lo: 0, hi: (1 << 0) | (1 << 2) }; // hi bits 0 and 2 = indices 32, 34
+  expect(ALPHA64.getLetters(m)).toEqual([ALPHA64.letterAt(32), ALPHA64.letterAt(34)]);
+});
+
+test('getLetters: mixed lo+hi mask returns letters in alphabet order', () => {
+  const m: LetterMask = { lo: 1, hi: 1 }; // indices 0 and 32
+  expect(ALPHA64.getLetters(m)).toEqual([ALPHA64.letterAt(0), ALPHA64.letterAt(32)]);
+});
+
+test('hasLetterAt: hi indices', () => {
+  const m = ALPHA64.forLetter(ALPHA64.letterAt(33)); // {lo:0, hi:1<<1}
+  expect(ALPHA64.hasLetterAt(m, 33)).toBe(true);
+  expect(ALPHA64.hasLetterAt(m, 32)).toBe(false);
+  expect(ALPHA64.hasLetterAt(m, 0)).toBe(false);
+});
+
+test('onlyLetterAt: hi indices match forLetter', () => {
+  for (const i of [32, 48, 63]) {
+    expect(ALPHA64.onlyLetterAt(i)).toEqual(ALPHA64.forLetter(ALPHA64.letterAt(i)));
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 36-letter fill regression
+// ---------------------------------------------------------------------------
+
+test('fill engine with 36-letter alphabet: 4×4 grid fills correctly', () => {
+  const { FillEngineInstance } = require('../fillEngine');
+  // 4×4 all-white grid, single across/down slots of length 4
+  const size = 4;
+  const blacks = Array.from({ length: size }, () => Array(size).fill(false));
+  // words: 4-letter strings using only letters 0-35 of ALPHA36
+  const w4 = [
+    ALPHA36.letterAt(0).repeat(0) + [0,1,2,3].map(i => ALPHA36.letterAt(i)).join(''),
+    [4,5,6,7].map(i => ALPHA36.letterAt(i)).join(''),
+    [8,9,10,11].map(i => ALPHA36.letterAt(i)).join(''),
+    [12,13,14,15].map(i => ALPHA36.letterAt(i)).join(''),
+    [0,4,8,12].map(i => ALPHA36.letterAt(i)).join(''),
+    [1,5,9,13].map(i => ALPHA36.letterAt(i)).join(''),
+    [2,6,10,14].map(i => ALPHA36.letterAt(i)).join(''),
+    [3,7,11,15].map(i => ALPHA36.letterAt(i)).join(''),
+  ];
+  const wordsByLength = new Map([[4, w4]]);
+  const engine = new FillEngineInstance({ size, blacks, wordsByLength, alphabet: ALPHA36, seed: 1, timeoutMs: 5000 });
+  while (!engine.step(1000)) {}
+  const result = engine.getResult();
+  expect(result.success).toBe(true);
+});
+
+test('64-letter alphabet: word index builds without crash', () => {
+  const { buildWordIndex } = require('../wordIndex');
+  const words = [
+    [0,1,2,3].map(i => ALPHA64.letterAt(i)).join(''),
+    [32,33,34,35].map(i => ALPHA64.letterAt(i)).join(''),
+  ];
+  expect(() => buildWordIndex(words, ALPHA64)).not.toThrow();
 });
