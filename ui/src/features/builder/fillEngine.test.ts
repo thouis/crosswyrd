@@ -155,6 +155,20 @@ describe('propagateConstraints', () => {
 });
 
 describe('FillEngineInstance', () => {
+  test('same seed produces same fill result', () => {
+    const run = (seed: number) => {
+      const engine = createFillEngine({ size, blacks: twoCorners, wordsByLength, seed });
+      let done = false;
+      for (let i = 0; i < 1000 && !done; i++) done = engine.step(10);
+      return engine.getResult().grid;
+    };
+    const g1 = run(7);
+    const g2 = run(7);
+    const g3 = run(99);
+    expect(g1).toEqual(g2);
+    expect(g1).not.toEqual(g3);
+  });
+
   test('step fills the grid in finite steps', () => {
     const engine = createFillEngine({
       size,
