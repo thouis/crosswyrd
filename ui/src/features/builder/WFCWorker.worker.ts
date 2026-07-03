@@ -10,7 +10,7 @@ import { expose } from 'comlink';
 import _ from 'lodash';
 
 import { CrosswordPuzzleType, LetterType } from './builderSlice';
-import { ALL_LETTERS } from './constants';
+import { ENGLISH } from './Alphabet';
 import { DictionaryType } from './useDictionary';
 import {
   ElementType,
@@ -49,7 +49,7 @@ function waveFromPuzzle(puzzle: CrosswordPuzzleType): WaveType {
   // transferred, only whether the value is solid or not is taken into account.
   // I.e., each non-solid tile has all letters as options.
   const solid = (tile) => tile.value === 'black';
-  const options = (tile) => (solid(tile) ? [] : [...ALL_LETTERS]);
+  const options = (tile) => (solid(tile) ? [] : [...ENGLISH.letters] as LetterType[]);
   return {
     elements: _.map(puzzle.tiles, (row, rowIndex) =>
       _.map(row, (tile, columnIndex) => ({
