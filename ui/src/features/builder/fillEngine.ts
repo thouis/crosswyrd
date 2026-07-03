@@ -17,7 +17,7 @@ function maskSingle(m: LetterMask): boolean {
 }
 function maskAnd(a: LetterMask, b: LetterMask): LetterMask { return { lo: a.lo & b.lo, hi: a.hi & b.hi }; }
 function maskOr(a: LetterMask, b: LetterMask): LetterMask { return { lo: a.lo | b.lo, hi: a.hi | b.hi }; }
-function maskMutableOr(acc: MutableLetterMask, m: LetterMask): void { acc.lo |= m.lo; acc.hi |= m.hi; }
+function maskAccumulate(acc: MutableLetterMask, m: LetterMask): void { acc.lo |= m.lo; acc.hi |= m.hi; }
 function maskContains(m: LetterMask, bit: LetterMask): boolean { return (m.lo & bit.lo) !== 0 || (m.hi & bit.hi) !== 0; }
 function maskEquals(a: LetterMask, b: LetterMask): boolean { return a.lo === b.lo && a.hi === b.hi; }
 function maskHasMultiple(m: LetterMask): boolean { return !maskEmpty(m) && !maskSingle(m); }
@@ -302,7 +302,7 @@ export class FillEngineInstance {
         for (let p = 0; p < slot.len; p++) {
           union.lo = 0; union.hi = 0;
           for (const w of filtered) {
-            maskMutableOr(union, this.alphabet.forLetter(w[p]));
+            maskAccumulate(union, this.alphabet.forLetter(w[p]));
           }
           const idx = this.cellIdx(slot.cells[p].row, slot.cells[p].col);
           const oldMask = this.cellMasks[idx];
