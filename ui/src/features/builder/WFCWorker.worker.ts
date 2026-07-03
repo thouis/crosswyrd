@@ -1,289 +1,177 @@
-// Async Web Worker setup borrowed from
-// https://github.com/dominique-mueller/create-react-app-typescript-web-worker-setup
-//
-// NOTE(gnewman): BE CAREFUL importing things from other modules. Try to just
-// stick to importing types (consts may be OK) but not functions. Packaging
-// this Web Worker can get into an infinite loop if we try to import
-// functionality from elsewhere.
+// PR2: fillEngine-based worker
 
 import { expose } from 'comlink';
 import _ from 'lodash';
 
+import { Alphabet, ENGLISH } from './Alphabet';
 import { CrosswordPuzzleType, LetterType } from './builderSlice';
-import { ENGLISH } from './Alphabet';
-import { DictionaryType } from './useDictionary';
 import {
   ElementType,
+  FillWaveUpdate,
   TileUpdateType,
   WaveType,
 } from './useWaveFunctionCollapse';
+import {
+  WordIndexType,
+  buildWordIndex,
+  addWords as addWordsToWordIndex,
+} from './wordIndex';
+import {
+  FillEngineInstance,
+  createFillEngine,
+  propagateConstraints,
+} from './fillEngine';
 
-/* --- BEGIN COPY/PASTED FUNCTIONS --- */
-// NOTE(gnewman): These functions are copy/pasted here from
-// useWaveFunctionCollapse.ts because packaging this Web Worker fails if we try
-// to import it from elsewhere.
-function findWordOptions(
-  words: string[],
-  optionsSet: (LetterType | '.')[][]
-): string[] {
-  const regex = new RegExp(
-    '^' +
-      _.join(
-        _.map(optionsSet, (options) => `(?:${_.join(options, '|')})`),
-        ''
-      ) +
-      '$'
-  );
+// ---------------------------------------------------------------------------
+// Module state
+// ---------------------------------------------------------------------------
 
-  return _.reject(words, (word) => word.search(regex) === -1);
-}
-export function findWordOptionsFromDictionary(
-  dictionary: DictionaryType,
-  optionsSet: (LetterType | '.')[][]
-): string[] {
-  return findWordOptions(dictionary[optionsSet.length] || [], optionsSet);
-}
+let workerAlphabet: Alphabet = ENGLISH;
+let workerWordIndex: WordIndexType | null = null;
+let baseWordList: string[] = [];
+const bankWords = new Set<string>();
+let stopFillRequested = false;
 
-function waveFromPuzzle(puzzle: CrosswordPuzzleType): WaveType {
-  // Returns a wave given the pattern of the puzzle. The puzzle values are NOT
-  // transferred, only whether the value is solid or not is taken into account.
-  // I.e., each non-solid tile has all letters as options.
-  const solid = (tile) => tile.value === 'black';
-  const options = (tile) => (solid(tile) ? [] : [...ENGLISH.letters] as LetterType[]);
-  return {
-    elements: _.map(puzzle.tiles, (row, rowIndex) =>
-      _.map(row, (tile, columnIndex) => ({
-        row: rowIndex,
-        column: columnIndex,
-        options: options(tile),
-        entropy: computeEntropy(options(tile)),
-        solid: solid(tile),
-      }))
-    ),
-    puzzleVersion: puzzle.version,
-  };
-}
-
-function computeEntropy(options: LetterType[]): number {
-  // TODO: Make this computeWeightedEntropy, and use scrabble weights
-  // Adapted from this numpy code
-  //value,counts = np.unique(labels, return_counts=True)
-  //norm_counts = counts / counts.sum()
-  //base = e if base is None else base
-  //return -(norm_counts * np.log(norm_counts)/np.log(base)).sum()
-
-  const counts = _.values(_.countBy(options));
-  const countsSum = _.sum(counts);
-  const normalizedCounts = _.map(counts, (count) => count / countsSum);
-  const entropy = -_.sum(
-    _.map(normalizedCounts, (count) => count * Math.log(count))
-  );
-  return entropy;
-}
-/* --- END COPY/PASTED FUNCTIONS --- */
-
-export interface WFCWorkerAPIType {
-  withTileUpdates: (
-    dictionary: DictionaryType,
-    wave: WaveType,
-    puzzle: CrosswordPuzzleType,
-    tileUpdates: TileUpdateType[]
-  ) => WaveType;
-}
-interface ObservationType {
-  row: number;
-  column: number;
-  value: LetterType;
-}
-interface ElementUpdateType extends ElementType {
-  // Whether this update should be forced to cascade, even if the target
-  // element is already constrained enough
-  force?: boolean;
-}
-
-function isSubset<T extends string>(subset: Array<T>, set: Array<T>): boolean {
-  return _.every(subset, (element) => set.includes(element));
-}
-
-function intersection<T>(setA: Array<T>, setB: Array<T>): Array<T> {
-  return _.filter(setA, (element) => setB.includes(element));
-}
-
-function wordsToLettersSets(
-  words: string[],
-  wordLength: number
-): LetterType[][] {
-  if (words.length === 0)
-    // No words => no letter options for each location
-    return _.times(wordLength, (index) => []);
-  const lettersSets = _.times(wordLength, () => new Array<LetterType>());
-  _.forEach(words, (word) => {
-    _.forEach(word, (letter, letterIndex) => {
-      lettersSets[letterIndex].push(letter as LetterType);
-    });
+const indexReady: Promise<void> = fetch(`${process.env.PUBLIC_URL}/word_list.json`)
+  .then(r => r.json())
+  .then((words: string[]) => {
+    baseWordList = words;
+    workerWordIndex = buildWordIndex(words, workerAlphabet);
   });
 
-  return lettersSets;
-}
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
-function computeDownElementUpdates(
-  dictionary: DictionaryType,
-  wave: WaveType,
-  row: number,
-  column: number
-): ElementType[] {
-  let startRow = row;
-  while (startRow > 0 && !wave.elements[startRow - 1][column].solid) startRow--;
-  let stopRow = row;
-  while (
-    stopRow < wave.elements.length - 1 &&
-    !wave.elements[stopRow + 1][column].solid
-  )
-    stopRow++;
-
-  return _.map(
-    wordsToLettersSets(
-      findWordOptionsFromDictionary(
-        dictionary,
-        _.map(
-          _.range(startRow, stopRow + 1),
-          (newUpdateRow) => wave.elements[newUpdateRow][column].options
-        )
-      ),
-      stopRow - startRow + 1
-    ),
-    (letters, index) => ({
-      options: _.uniq(letters),
-      entropy: computeEntropy(letters),
-      row: startRow + index,
-      column,
-      solid: false,
-    })
-  );
-}
-
-function computeAcrossElementUpdates(
-  dictionary: DictionaryType,
-  wave: WaveType,
-  row: number,
-  column: number
-): ElementType[] {
-  let startColumn = column;
-  while (startColumn > 0 && !wave.elements[row][startColumn - 1].solid)
-    startColumn--;
-  let stopColumn = column;
-  while (
-    stopColumn < wave.elements.length - 1 &&
-    !wave.elements[row][stopColumn + 1].solid
-  )
-    stopColumn++;
-
-  return _.map(
-    wordsToLettersSets(
-      findWordOptionsFromDictionary(
-        dictionary,
-        _.map(
-          _.range(startColumn, stopColumn + 1),
-          (newUpdateColumn) => wave.elements[row][newUpdateColumn].options
-        )
-      ),
-      stopColumn - startColumn + 1
-    ),
-    (letters, index) => ({
-      options: _.uniq(letters),
-      entropy: computeEntropy(letters),
-      row,
-      column: startColumn + index,
-      solid: false,
-    })
-  );
-}
-
-function withNewObservationAtLocation(
-  dictionary: DictionaryType,
-  wave: WaveType,
-  row: number,
-  column: number,
-  value: LetterType
-): WaveType {
-  // TODO: Don't rely on JSON parsing for doing a deep copy?
-  const waveCopy = JSON.parse(JSON.stringify(wave));
-  // Start with the given observation in the queue
-  const updateQueue: ElementUpdateType[] = [
-    {
-      row,
-      column,
-      options: [value],
-      entropy: computeEntropy([value]),
-      solid: false,
-      // Force cascading, even if the target element is already constrained
-      // enough
-      force: true,
-    },
-  ];
-
-  // Churn through the queue
-  while (true) {
-    const update = updateQueue.shift();
-    // Queue empty => break
-    if (!update) break;
-
-    const element = waveCopy.elements[update.row][update.column];
-    // Update is less constrained than the current wave element (i.e., current
-    // constraints are a subset of the update's) => go next
-    if (!update.force && isSubset(element.options, update.options)) continue;
-
-    // Update the element with the intersection of the current options and the
-    // update's options
-    element.options = intersection(element.options, update.options);
-    element.entropy = element.options.length === 1 ? 0 : update.entropy;
-
-    // Enqueue updates for all tiles in the down word that intersects this tile
-    _.forEach(
-      computeDownElementUpdates(
-        dictionary,
-        waveCopy,
-        update.row,
-        update.column
-      ),
-      (update, index) => {
-        updateQueue.push(update);
-      }
-    );
-    // Enqueue updates for all tiles in the across word that intersects this
-    // tile
-    _.forEach(
-      computeAcrossElementUpdates(
-        dictionary,
-        waveCopy,
-        update.row,
-        update.column
-      ),
-      (update, index) => {
-        updateQueue.push(update);
-      }
-    );
+function indexToWordsByLength(index: WordIndexType): Map<number, string[]> {
+  const m = new Map<number, string[]>();
+  for (const lenStr of Object.keys(index.words)) {
+    const len = +lenStr;
+    m.set(len, index.words[len].slice());
   }
-
-  return waveCopy;
+  return m;
 }
 
-function withNewObservations(
-  dictionary: DictionaryType,
-  wave: WaveType,
-  observations: ObservationType[]
-): WaveType {
-  return _.reduce(
-    observations,
-    (finalWave, { row, column, value }) =>
-      withNewObservationAtLocation(dictionary, finalWave, row, column, value),
-    wave
+function filterBannedWords(
+  wordsByLength: Map<number, string[]>,
+  bannedWords: string[]
+): Map<number, string[]> {
+  if (!bannedWords || bannedWords.length === 0) return wordsByLength;
+  const banned = new Set(bannedWords);
+  const out = new Map<number, string[]>();
+  wordsByLength.forEach((ws, len) => {
+    out.set(len, ws.filter(w => !banned.has(w)));
+  });
+  return out;
+}
+
+function rebuildBitsetForLength(index: WordIndexType, len: number): void {
+  const alphaSize = workerAlphabet.size;
+  const ws = index.words[len] ?? [];
+  const s = Math.max(1, Math.ceil(ws.length / 32));
+  index.stride[len] = s;
+  const pb: Uint32Array[][] = Array.from({ length: len }, () =>
+    Array.from({ length: alphaSize }, () => new Uint32Array(s))
   );
+  for (let i = 0; i < ws.length; i++) {
+    const u = i >>> 5, b = 1 << (i & 31);
+    for (let p = 0; p < len; p++) {
+      pb[p][workerAlphabet.letterIndex(ws[i][p])][u] |= b;
+    }
+  }
+  index.bitsets[len] = pb;
 }
 
-function recoverTiles(newWave: WaveType, oldWave: WaveType) {
-  // Preserve tiles that are already resolved to one option--this prevents a
-  // contradiction from making the whole board red.
+// Extract blacks / placedLetters from puzzle
+function extractPuzzleState(puzzle: CrosswordPuzzleType): {
+  size: number;
+  blacks: boolean[][];
+  placedLetters: Map<string, string>;
+} {
+  const size = puzzle.tiles.length;
+  const blacks: boolean[][] = [];
+  const placedLetters = new Map<string, string>();
+  for (let r = 0; r < size; r++) {
+    const row: boolean[] = [];
+    for (let c = 0; c < size; c++) {
+      const t = puzzle.tiles[r][c];
+      row.push(t.value === 'black');
+      if (t.value !== 'black' && t.value !== 'empty') {
+        placedLetters.set(`${r},${c}`, t.value as string);
+      }
+    }
+    blacks.push(row);
+  }
+  return { size, blacks, placedLetters };
+}
+
+// Compute wave from puzzle via propagateConstraints
+function computeWaveFromPuzzle(
+  puzzle: CrosswordPuzzleType,
+  baseWave: WaveType,
+  bannedWords: string[] = []
+): WaveType {
+  const { size, blacks, placedLetters } = extractPuzzleState(puzzle);
+  const wordsByLength = workerWordIndex
+    ? indexToWordsByLength(workerWordIndex)
+    : new Map<number, string[]>();
+  const filtered = filterBannedWords(wordsByLength, bannedWords);
+  const result = propagateConstraints({
+    size,
+    blacks,
+    wordsByLength: filtered,
+    placedLetters,
+    alphabet: workerAlphabet,
+  });
+
+  const elements: ElementType[][] = [];
+  for (let r = 0; r < size; r++) {
+    const row: ElementType[] = [];
+    for (let c = 0; c < size; c++) {
+      const solid = blacks[r][c];
+      const options = solid ? [] : (result.options[r][c] as LetterType[]);
+      row.push({
+        row: r,
+        column: c,
+        options,
+        entropy: options.length <= 1 ? 0 : Math.log(options.length),
+        solid,
+      });
+    }
+    elements.push(row);
+  }
+  return { elements, puzzleVersion: puzzle.version };
+}
+
+function masksToWave(
+  cellMasksLo: Int32Array,
+  cellMasksHi: Int32Array,
+  blacks: boolean[][],
+  alpha: Alphabet = workerAlphabet
+): WaveType {
+  const size = blacks.length;
+  const elements: ElementType[][] = [];
+  for (let r = 0; r < size; r++) {
+    const row: ElementType[] = [];
+    for (let c = 0; c < size; c++) {
+      const solid = blacks[r][c];
+      const idx = r * size + c;
+      const lo = cellMasksLo[idx];
+      const options = solid ? [] : (alpha.getLetters(lo) as LetterType[]);
+      row.push({
+        row: r,
+        column: c,
+        options,
+        entropy: options.length <= 1 ? 0 : Math.log(options.length),
+        solid,
+      });
+    }
+    elements.push(row);
+  }
+  return { elements, puzzleVersion: '' };
+}
+
+function recoverTiles(newWave: WaveType, oldWave: WaveType): void {
   _.forEach(newWave.elements, (row, rowIndex) =>
     _.forEach(row, (newElement, columnIndex) => {
       const oldElement = oldWave.elements[rowIndex][columnIndex];
@@ -294,128 +182,184 @@ function recoverTiles(newWave: WaveType, oldWave: WaveType) {
   );
 }
 
-function newWaveFromPuzzle(
-  dictionary: DictionaryType,
-  puzzle: CrosswordPuzzleType,
-  tileUpdates: TileUpdateType[]
-): WaveType {
-  const surroundingTiles = (row: number, column: number): TileUpdateType[] =>
-    _.compact(
-      _.map(
-        [
-          [-1, 0],
-          [1, 0],
-          [0, -1],
-          [0, 1],
-        ],
-        ([xdir, ydir]) => {
-          const tile = puzzle.tiles?.[row + ydir]?.[column + xdir];
-          return (
-            tile && {
-              row,
-              column,
-              value: tile.value,
-            }
-          );
-        }
-      )
-    );
-  const newWave = waveFromPuzzle(puzzle);
+// ---------------------------------------------------------------------------
+// API
+// ---------------------------------------------------------------------------
 
-  // Commit observations on the filled-in tiles touching at least one empty
-  // tile, and just set the collapsed state for the other filled-in tiles.
-  const observations = _.compact(
-    _.flatMap(puzzle.tiles, (row, rowIndex) =>
-      _.map(row, (tile, columnIndex) => {
-        if (tile.value === 'empty' || tile.value === 'black') return null;
-        // Tile was updated, or some surrounding tile is empty or was updated
-        if (
-          // Tile was updated
-          _.some(
-            tileUpdates,
-            (update) => update.row === rowIndex && update.column === columnIndex
-          ) ||
-          // Some surrounding tile is empty or was updated
-          _.some(
-            surroundingTiles(rowIndex, columnIndex),
-            (tile) =>
-              _.some(
-                tileUpdates,
-                (update) =>
-                  update.row === tile.row && update.column === tile.column
-              ) || tile?.value === 'empty'
-          )
-        )
-          return {
-            row: rowIndex,
-            column: columnIndex,
-            value: tile.value,
-          };
-        // Write options and entropy directly for elements that have no empty
-        // adjacent tiles (these are already collapsed)
-        newWave.elements[rowIndex][columnIndex].options = [tile.value];
-        newWave.elements[rowIndex][columnIndex].entropy = 0;
-
-        return null;
-      })
-    )
-  );
-  return withNewObservations(dictionary, newWave, observations);
+export interface WFCWorkerAPIType {
+  waitForIndex: () => Promise<void>;
+  resetIndex: () => Promise<void>;
+  setAlphabet: (letters: string[]) => void;
+  withTileUpdates: (
+    wave: WaveType,
+    puzzle: CrosswordPuzzleType,
+    tileUpdates: TileUpdateType[],
+    bannedWords?: string[]
+  ) => Promise<WaveType>;
+  addWordsToIndex: (words: string[]) => void;
+  removeWordsFromIndex: (words: string[]) => void;
+  startFill: (
+    blacks: boolean[][],
+    placedLetters: Array<{ row: number; col: number; letter: string }>,
+    bankWordsIn: string[],
+    seed: number,
+    onProgress: (update: FillWaveUpdate) => void
+  ) => Promise<void>;
+  stopFill: () => void;
+  startRevision: (
+    blacks: boolean[][],
+    solvedGrid: string[][],
+    removedSlotCells: Array<Array<{ row: number; col: number }>>,
+    lockedSlotCells: Array<Array<{ row: number; col: number }>>,
+    bannedWords: string[],
+    bankWordsIn: string[],
+    seed: number,
+    onProgress: (update: FillWaveUpdate) => void
+  ) => Promise<void>;
 }
 
 const WFCWorkerAPI: WFCWorkerAPIType = {
-  withTileUpdates: (
-    dictionary: DictionaryType,
+  waitForIndex: async () => {
+    await indexReady;
+  },
+
+  resetIndex: async () => {
+    if (!workerWordIndex) await indexReady;
+    workerWordIndex = buildWordIndex(baseWordList, workerAlphabet);
+    bankWords.clear();
+  },
+
+  setAlphabet: (letters: string[]) => {
+    workerAlphabet = new Alphabet(letters);
+    if (baseWordList.length > 0) {
+      workerWordIndex = buildWordIndex(baseWordList, workerAlphabet);
+    }
+  },
+
+  withTileUpdates: async (
     wave: WaveType,
     puzzle: CrosswordPuzzleType,
-    tileUpdates: TileUpdateType[]
-  ): WaveType => {
-    // Find all of the observations that are "proper", i.e., they only
-    // further constrain the options for all given wave elements.
-    // NOTE(gnewman): We have to use this strange compact+map syntax so the
-    // type system recognizes we're constraining the type of `value`.
-    const properObservations: ObservationType[] = _.compact(
-      _.map(tileUpdates, ({ row, column, value }) => {
-        if (
-          // Tile value empty or black
-          value === 'empty' ||
-          value === 'black' ||
-          // Tile value not included in options
-          !_.includes(wave.elements[row][column].options, value)
-        )
-          return null;
-        return { row, column, value };
-      })
-    );
-
-    if (properObservations.length === tileUpdates.length) {
-      // All observations are proper! This is the fast path.
-      const updatedWave = withNewObservations(
-        dictionary,
-        {
-          ...wave,
-          // We need to return a new wave that matches the puzzle version
-          puzzleVersion: puzzle.version,
-        },
-        properObservations
-      );
-      recoverTiles(updatedWave, wave);
-      return updatedWave;
-    }
-
-    // At least one observation is redefining constraints, e.g., we are
-    // overwriting an existing word, toggling a grid tile, or clearing a
-    // tile. We must now copy the puzzle, overwrite these locations, make a
-    // new wave, and observe at ALL filled tile locations adjacent to empty
-    // spaces.
-    // This is the slow path.
+    tileUpdates: TileUpdateType[],
+    bannedWordsIn: string[] = []
+  ): Promise<WaveType> => {
+    if (!workerWordIndex) await indexReady;
     const puzzleCopy: CrosswordPuzzleType = JSON.parse(JSON.stringify(puzzle));
     _.forEach(tileUpdates, ({ row, column, value }) => {
       puzzleCopy.tiles[row][column].value = value;
     });
-    const updatedWave = newWaveFromPuzzle(dictionary, puzzleCopy, tileUpdates);
-    recoverTiles(updatedWave, wave);
-    return updatedWave;
+    const updated = computeWaveFromPuzzle(puzzleCopy, wave, bannedWordsIn);
+    updated.puzzleVersion = puzzle.version;
+    recoverTiles(updated, wave);
+    return updated;
+  },
+
+  addWordsToIndex: (words: string[]) => {
+    if (!workerWordIndex) return;
+    for (const w of words) bankWords.add(w);
+    addWordsToWordIndex(workerWordIndex, words, workerAlphabet);
+  },
+
+  removeWordsFromIndex: (words: string[]) => {
+    if (!workerWordIndex) return;
+    const affectedLens = new Set<number>();
+    for (const w of words) {
+      if (!bankWords.has(w)) continue;
+      bankWords.delete(w);
+      const len = w.length;
+      const ws = workerWordIndex.words[len];
+      if (!ws) continue;
+      const idx = ws.indexOf(w);
+      if (idx !== -1) {
+        ws.splice(idx, 1);
+        affectedLens.add(len);
+      }
+    }
+    affectedLens.forEach(len => rebuildBitsetForLength(workerWordIndex!, len));
+  },
+
+  startFill: async (
+    blacks: boolean[][],
+    placedLetters: Array<{ row: number; col: number; letter: string }>,
+    bankWordsIn: string[],
+    seed: number,
+    onProgress: (update: FillWaveUpdate) => void
+  ): Promise<void> => {
+    if (!workerWordIndex) await indexReady;
+    stopFillRequested = false;
+    const size = blacks.length;
+    const wordsByLength = workerWordIndex
+      ? indexToWordsByLength(workerWordIndex)
+      : new Map<number, string[]>();
+
+    const engine: FillEngineInstance = createFillEngine({
+      size,
+      blacks,
+      wordsByLength,
+      bankWords: bankWordsIn,
+      seed,
+      timeoutMs: Infinity,
+      alphabet: workerAlphabet,
+    });
+
+    const placedMap = new Map<string, string>();
+    for (const { row, col, letter } of placedLetters) {
+      placedMap.set(`${row},${col}`, letter);
+    }
+    const setOk = engine.setPlacedLetters(placedMap);
+    if (!setOk) {
+      onProgress({ done: true, success: false, failureReason: 'contradiction' });
+      return;
+    }
+
+    // Send initial wave (constraint-propagated state) before stepping
+    {
+      const upd = engine.getProgressUpdate();
+      const wave = masksToWave(upd.cellMasksLo, upd.cellMasksHi, blacks, workerAlphabet);
+      onProgress({ done: false, wave });
+    }
+
+    while (true) {
+      if (stopFillRequested) {
+        onProgress({ done: true, success: false, failureReason: 'noValidFill' });
+        return;
+      }
+      const done = engine.step(10);
+      const upd = engine.getProgressUpdate();
+      const wave = masksToWave(upd.cellMasksLo, upd.cellMasksHi, blacks, workerAlphabet);
+      if (done) {
+        const result = engine.getResult();
+        if (result.success) {
+          onProgress({ done: true, success: true, grid: result.grid });
+        } else {
+          onProgress({
+            done: true,
+            success: false,
+            failureReason: (result.failureReason ?? 'noValidFill') as
+              'timeout' | 'maxSteps' | 'noValidFill' | 'contradiction',
+          });
+        }
+        return;
+      }
+      onProgress({ done: false, wave });
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
+    }
+  },
+
+  stopFill: () => {
+    stopFillRequested = true;
+  },
+
+  startRevision: async (
+    _blacks,
+    _solvedGrid,
+    _removedSlotCells,
+    _lockedSlotCells,
+    _bannedWords,
+    _bankWordsIn,
+    _seed,
+    onProgress
+  ) => {
+    onProgress({ done: true, success: false, failureReason: 'noValidFill' });
   },
 };
 

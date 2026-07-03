@@ -97,13 +97,17 @@ export default function CrosswordBuilder({ grid }: Props) {
   const fillAssistActive = useSelector(selectFillAssistActive);
   const { dictionary, addWordsToDictionary } = useDictionary();
   const { tileNumbers } = useClueData(puzzle);
+  const [wordBankWords, setWordBankWords] = useState<string[]>([]);
   const {
     wave,
     updateWaveWithTileUpdates,
     updateWave,
     setWaveState,
     busy: WFCBusy,
-  } = useWaveFunctionCollapse(puzzle);
+    wordIndexReady,
+    resetWordIndex,
+    WFCWorkerRef,
+  } = useWaveFunctionCollapse(puzzle, wordBankWords);
   const {
     popStateHistory,
     popStateFuture,
@@ -179,15 +183,13 @@ export default function CrosswordBuilder({ grid }: Props) {
     return nextState;
   }, [dispatch, setWaveState, popStateFuture, updateSelection]);
   const { runAutoFill, stopAutoFill, autoFillError } = useAutoFill(
-    dictionary,
     puzzle,
-    wave,
     autoFillRunning,
     setAutoFillRunning,
     pushStateHistory,
+    WFCWorkerRef,
     updateWaveWithTileUpdates,
-    WFCBusy,
-    stepBack
+    wordBankWords
   );
 
   // Update the wave with changes to the puzzle
