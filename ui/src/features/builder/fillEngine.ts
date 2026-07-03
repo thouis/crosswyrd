@@ -79,24 +79,6 @@ export interface SlotTopology {
 // Helpers
 // ---------------------------------------------------------------------------
 
-export function groupWordsByLength(words: string[], alphabet?: Alphabet): Map<number, string[]> {
-  const alpha = alphabet ?? ENGLISH;
-  const alphaSet = new Set(alpha.letters);
-  const m = new Map<number, string[]>();
-  for (const w of words) {
-    if (w.length === 0) continue;
-    let ok = true;
-    for (let i = 0; i < w.length; i++) {
-      if (!alphaSet.has(w[i])) { ok = false; break; }
-    }
-    if (!ok) continue;
-    let arr = m.get(w.length);
-    if (!arr) { arr = []; m.set(w.length, arr); }
-    arr.push(w);
-  }
-  return m;
-}
-
 // Seeded PRNG (mulberry32)
 function makePRNG(seed: number): () => number {
   let s = seed;
