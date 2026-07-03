@@ -1,9 +1,21 @@
 /**
- * PR2 fill engine — simple string-based crossword filling with backtracking.
- * Uses PR1 single-int LetterMask. No optimizations; correctness first.
+ * PR6a fill engine — uses LetterMask = {lo, hi} struct (hi always 0 until PR6b).
+ * Simple string-based crossword filling with backtracking. No optimizations; correctness first.
  */
 
-import { Alphabet, LetterMask, ENGLISH } from './Alphabet';
+import { Alphabet, LetterMask, MutableLetterMask, ENGLISH } from './Alphabet';
+
+// ---------------------------------------------------------------------------
+// Inline LetterMask helpers (module-scope; hi=0 invariant holds through PR6a)
+// ---------------------------------------------------------------------------
+
+const EMPTY_MASK: LetterMask = { lo: 0, hi: 0 };
+function maskEmpty(m: LetterMask): boolean { return m.lo === 0 && m.hi === 0; }
+function maskSingle(m: LetterMask): boolean { return m.lo !== 0 && (m.lo & (m.lo - 1)) === 0 && m.hi === 0; }
+function maskAnd(a: LetterMask, b: LetterMask): LetterMask { return { lo: a.lo & b.lo, hi: a.hi & b.hi }; }
+function maskOr(a: LetterMask, b: LetterMask): LetterMask { return { lo: a.lo | b.lo, hi: a.hi | b.hi }; }
+function maskContains(m: LetterMask, bit: LetterMask): boolean { return (m.lo & bit.lo) !== 0 || (m.hi & bit.hi) !== 0; }
+function maskEquals(a: LetterMask, b: LetterMask): boolean { return a.lo === b.lo && a.hi === b.hi; }
 
 // ---------------------------------------------------------------------------
 // Public API types
@@ -210,10 +222,10 @@ export class FillEngineInstance {
     this.cellToSlots = topo.cellToSlots;
 
     // Initialize cell masks
-    this.cellMasks = new Array(size * size).fill(0);
+    this.cellMasks = new Array(size * size).fill(EMPTY_MASK);
     for (let r = 0; r < size; r++) {
       for (let c = 0; c < size; c++) {
-        this.cellMasks[r * size + c] = blacks[r][c] ? 0 : this.alphabet.ALL;
+        this.cellMasks[r * size + c] = blacks[r][c] ? EMPTY_MASK : this.alphabet.ALL;
       }
     }
 
@@ -255,7 +267,7 @@ export class FillEngineInstance {
       for (let p = 0; p < slot.len; p++) {
         const bit = this.alphabet.forLetter(w[p]);
         const m = this.cellMasks[this.cellIdx(slot.cells[p].row, slot.cells[p].col)];
-        if ((m & bit) === 0) { ok = false; break; }
+        if (!maskContains(m, bit)) { ok = false; break; }
       }
       if (ok) out.push(w);
     }
@@ -279,20 +291,24 @@ export class FillEngineInstance {
           return false;
         }
 
-        // Narrow each cell mask to union of possible letters at position p
+        // Narrow each cell mask to union of possible letters at position p.
+        // Use a single mutable accumulator to avoid one allocation per candidate.
+        const union: MutableLetterMask = { lo: 0, hi: 0 };
         for (let p = 0; p < slot.len; p++) {
-          let unionMask: LetterMask = 0;
+          union.lo = 0; union.hi = 0;
           for (const w of filtered) {
-            unionMask |= this.alphabet.forLetter(w[p]);
+            const bit = this.alphabet.forLetter(w[p]);
+            union.lo |= bit.lo;
+            union.hi |= bit.hi;
           }
           const idx = this.cellIdx(slot.cells[p].row, slot.cells[p].col);
           const oldMask = this.cellMasks[idx];
           if (filtered.length === 0) continue; // no dict words case; leave mask
-          const newMask = oldMask & unionMask;
-          if (newMask !== oldMask) {
+          const newMask = maskAnd(oldMask, union);
+          if (!maskEquals(newMask, oldMask)) {
             this.cellMasks[idx] = newMask;
             changed = true;
-            if (newMask === 0) return false;
+            if (maskEmpty(newMask)) return false;
           }
         }
       }
@@ -341,7 +357,7 @@ export class FillEngineInstance {
       let word = '';
       for (const { row, col } of slot.cells) {
         const m = this.cellMasks[this.cellIdx(row, col)];
-        if (m === 0 || (m & (m - 1)) !== 0) { decided = false; break; }
+        if (maskEmpty(m) || !maskSingle(m)) { decided = false; break; }
         word += this.alphabet.getLetters(m)[0];
       }
       if (!decided) continue;
@@ -363,8 +379,7 @@ export class FillEngineInstance {
       let undecided = false;
       for (const { row, col } of slot.cells) {
         const m = this.cellMasks[this.cellIdx(row, col)];
-        // Single-letter mask has exactly one bit set
-        if (m !== 0 && (m & (m - 1)) !== 0) { undecided = true; break; }
+        if (!maskEmpty(m) && !maskSingle(m)) { undecided = true; break; }
       }
       if (!undecided) continue;
       const n = this.slotCandidates[si].length;
@@ -485,7 +500,7 @@ export class FillEngineInstance {
         if (this.blacks[r][c]) continue;
         total++;
         const m = this.cellMasks[this.cellIdx(r, c)];
-        if (m !== 0 && (m & (m - 1)) === 0) filled++;
+        if (!maskEmpty(m) && maskSingle(m)) filled++;
       }
     }
     return { filledCells: filled, totalCells: total };
@@ -495,7 +510,7 @@ export class FillEngineInstance {
     const { filledCells, totalCells } = this.countCells();
     const n = this.size * this.size;
     const lo = new Int32Array(n);
-    for (let i = 0; i < n; i++) lo[i] = this.cellMasks[i] | 0;
+    for (let i = 0; i < n; i++) lo[i] = this.cellMasks[i].lo;
     return {
       cellMasksLo: lo,
       cellMasksHi: new Int32Array(n),
@@ -516,7 +531,7 @@ export class FillEngineInstance {
       for (let c = 0; c < size; c++) {
         if (this.blacks[r][c]) { row.push('.'); continue; }
         const m = this.cellMasks[this.cellIdx(r, c)];
-        if (m !== 0 && (m & (m - 1)) === 0) {
+        if (!maskEmpty(m) && maskSingle(m)) {
           row.push(this.alphabet.getLetters(m)[0]);
         } else row.push(' ');
       }

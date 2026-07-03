@@ -1,4 +1,4 @@
-import { Alphabet, ENGLISH } from './Alphabet';
+import { Alphabet, LetterMask, ENGLISH } from './Alphabet';
 
 // ---------------------------------------------------------------------------
 // ENGLISH export
@@ -29,6 +29,14 @@ test('constructor throws when alphabet exceeds 32 letters', () => {
 test('constructor accepts exactly 32 letters', () => {
   const letters = 'abcdefghijklmnopqrstuvwxyzabcdef'.split('').slice(0, 32);
   expect(() => new Alphabet(letters)).not.toThrow();
+});
+
+// ---------------------------------------------------------------------------
+// EMPTY constant
+// ---------------------------------------------------------------------------
+
+test('EMPTY has lo=0 and hi=0', () => {
+  expect(ENGLISH.EMPTY).toEqual({ lo: 0, hi: 0 });
 });
 
 // ---------------------------------------------------------------------------
@@ -72,25 +80,27 @@ test('hasLetter false for letters not in alphabet', () => {
 // forLetter — single-letter masks
 // ---------------------------------------------------------------------------
 
-test('forLetter(a) === 1 (bit 0)', () => {
-  expect(ENGLISH.forLetter('a')).toBe(1);
+test('forLetter(a) has lo=1 (bit 0), hi=0', () => {
+  expect(ENGLISH.forLetter('a')).toEqual({ lo: 1, hi: 0 });
 });
 
-test('forLetter(b) === 2 (bit 1)', () => {
-  expect(ENGLISH.forLetter('b')).toBe(2);
+test('forLetter(b) has lo=2 (bit 1), hi=0', () => {
+  expect(ENGLISH.forLetter('b')).toEqual({ lo: 2, hi: 0 });
 });
 
-test('forLetter(z) === 1 << 25', () => {
-  expect(ENGLISH.forLetter('z')).toBe(1 << 25);
+test('forLetter(z) has lo=1<<25, hi=0', () => {
+  expect(ENGLISH.forLetter('z')).toEqual({ lo: 1 << 25, hi: 0 });
 });
 
-test('forLetter produces distinct powers of 2 for all letters', () => {
+test('forLetter produces distinct masks for all letters', () => {
   const masks = ENGLISH.letters.map((ch) => ENGLISH.forLetter(ch));
-  const unique = new Set(masks);
+  const loValues = masks.map((m) => m.lo);
+  const unique = new Set(loValues);
   expect(unique.size).toBe(26);
   for (const m of masks) {
-    expect(m & (m - 1)).toBe(0); // power of 2
-    expect(m).toBeGreaterThan(0);
+    expect(m.hi).toBe(0);
+    expect(m.lo & (m.lo - 1)).toBe(0); // power of 2
+    expect(m.lo).toBeGreaterThan(0);
   }
 });
 
@@ -98,22 +108,29 @@ test('forLetter produces distinct powers of 2 for all letters', () => {
 // ALL mask
 // ---------------------------------------------------------------------------
 
-test('ALL mask has all 26 English bits set', () => {
+test('ALL mask has all 26 English bits set in lo', () => {
   let combined = 0;
-  for (const ch of ENGLISH.letters) combined |= ENGLISH.forLetter(ch);
-  expect(ENGLISH.ALL).toBe(combined);
+  for (const ch of ENGLISH.letters) combined |= ENGLISH.forLetter(ch).lo;
+  expect(ENGLISH.ALL).toEqual({ lo: combined, hi: 0 });
+});
+
+test('32-letter alphabet ALL has lo=-1 (all 32 bits set)', () => {
+  const letters = 'abcdefghijklmnopqrstuvwxyzabcdef'.split('').slice(0, 32);
+  const alpha = new Alphabet(letters);
+  expect(alpha.ALL.lo).toBe(-1);
+  expect(alpha.ALL.hi).toBe(0);
 });
 
 // ---------------------------------------------------------------------------
 // getLetters
 // ---------------------------------------------------------------------------
 
-test('getLetters(0) returns empty array', () => {
-  expect(ENGLISH.getLetters(0)).toEqual([]);
+test('getLetters(EMPTY) returns empty array', () => {
+  expect(ENGLISH.getLetters(ENGLISH.EMPTY)).toEqual([]);
 });
 
 test('getLetters of first 3 bits returns [a, b, c]', () => {
-  expect(ENGLISH.getLetters(0b111)).toEqual(['a', 'b', 'c']);
+  expect(ENGLISH.getLetters({ lo: 0b111, hi: 0 })).toEqual(['a', 'b', 'c']);
 });
 
 test('getLetters(ALL) returns all 26 letters in order', () => {
@@ -122,6 +139,75 @@ test('getLetters(ALL) returns all 26 letters in order', () => {
 
 test('getLetters on custom alphabet', () => {
   const alpha = new Alphabet(['x', 'y', 'z']);
-  // forLetter('y') = bit 1
   expect(alpha.getLetters(alpha.forLetter('y'))).toEqual(['y']);
+});
+
+// ---------------------------------------------------------------------------
+// isEmpty
+// ---------------------------------------------------------------------------
+
+test('isEmpty returns true for EMPTY', () => {
+  expect(ENGLISH.isEmpty(ENGLISH.EMPTY)).toBe(true);
+});
+
+test('isEmpty returns false for non-zero mask', () => {
+  expect(ENGLISH.isEmpty(ENGLISH.forLetter('a'))).toBe(false);
+  expect(ENGLISH.isEmpty(ENGLISH.ALL)).toBe(false);
+});
+
+// ---------------------------------------------------------------------------
+// isSingleLetter
+// ---------------------------------------------------------------------------
+
+test('isSingleLetter true for single-bit masks', () => {
+  expect(ENGLISH.isSingleLetter(ENGLISH.forLetter('a'))).toBe(true);
+  expect(ENGLISH.isSingleLetter(ENGLISH.forLetter('z'))).toBe(true);
+});
+
+test('isSingleLetter false for EMPTY and multi-bit masks', () => {
+  expect(ENGLISH.isSingleLetter(ENGLISH.EMPTY)).toBe(false);
+  expect(ENGLISH.isSingleLetter(ENGLISH.ALL)).toBe(false);
+  expect(ENGLISH.isSingleLetter({ lo: 0b11, hi: 0 })).toBe(false);
+});
+
+// ---------------------------------------------------------------------------
+// getSingleLetter
+// ---------------------------------------------------------------------------
+
+test('getSingleLetter returns correct letter for each bit', () => {
+  for (const ch of ENGLISH.letters) {
+    expect(ENGLISH.getSingleLetter(ENGLISH.forLetter(ch))).toBe(ch);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// hasLetterAt
+// ---------------------------------------------------------------------------
+
+test('hasLetterAt true when bit i is set', () => {
+  const m = ENGLISH.forLetter('a'); // bit 0
+  expect(ENGLISH.hasLetterAt(m, 0)).toBe(true);
+  expect(ENGLISH.hasLetterAt(m, 1)).toBe(false);
+});
+
+test('hasLetterAt for bit 25 (z)', () => {
+  const m = ENGLISH.forLetter('z'); // bit 25
+  expect(ENGLISH.hasLetterAt(m, 25)).toBe(true);
+  expect(ENGLISH.hasLetterAt(m, 0)).toBe(false);
+});
+
+test('hasLetterAt on ALL mask: every bit 0–25 is set', () => {
+  for (let i = 0; i < 26; i++) {
+    expect(ENGLISH.hasLetterAt(ENGLISH.ALL, i)).toBe(true);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// onlyLetterAt
+// ---------------------------------------------------------------------------
+
+test('onlyLetterAt(i) matches forLetter(letterAt(i))', () => {
+  for (let i = 0; i < 26; i++) {
+    expect(ENGLISH.onlyLetterAt(i)).toEqual(ENGLISH.forLetter(ENGLISH.letterAt(i)));
+  }
 });

@@ -157,7 +157,8 @@ function masksToWave(
       const solid = blacks[r][c];
       const idx = r * size + c;
       const lo = cellMasksLo[idx];
-      const options = solid ? [] : (alpha.getLetters(lo) as LetterType[]);
+      const hi = cellMasksHi[idx];
+      const options = solid ? [] : (alpha.getLetters({ lo, hi }) as LetterType[]);
       row.push({
         row: r,
         column: c,
