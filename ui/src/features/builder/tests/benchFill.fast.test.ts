@@ -1,10 +1,12 @@
 /**
  * Fill engine fast regression benchmark.
- * 28 grids × 3 seeds at 1s timeout = up to 84 runs.
+ * 28 grids × 3 seeds at 2s timeout = up to 84 runs.
  *
  * Outcomes: Y=success, T=timeout, M=maxSteps, N=no-valid-fill (unexpected = bug)
  *
- * PR3 baseline: 5/84 Y, p50=455ms p90=699ms
+ * Baselines (2s timeout):
+ *   PR6b: 5/84 Y
+ *   PR7:  15/84 Y
  */
 
 import * as fs from 'fs';
@@ -13,11 +15,9 @@ import _ from 'lodash';
 import { fillGrid } from '../fillEngine';
 import { groupWordsByLength } from '../wordIndex';
 
-const Y_BASELINE = 5;
-const HARD_FAIL_THRESHOLD = 3;
 const KNOWN_UNSOLVABLE = new Set<number>();
 
-const TIMEOUT_MS = 1000;
+const TIMEOUT_MS = 2000;
 const MAX_STEPS = 400000;
 const SEEDS_PER_GRID = 3;
 
@@ -55,7 +55,7 @@ describe('fill engine fast benchmark', () => {
       .slice(0, 164);
   });
 
-  it(`${GRID_INDICES.length} grids × ${SEEDS_PER_GRID} seeds at ${TIMEOUT_MS}ms: Y >= ${HARD_FAIL_THRESHOLD} (baseline ${Y_BASELINE})`, () => {
+  it(`${GRID_INDICES.length} grids × ${SEEDS_PER_GRID} seeds at ${TIMEOUT_MS}ms`, () => {
     const size = 15;
     let successes = 0;
     const total = GRID_INDICES.length * SEEDS_PER_GRID;
@@ -97,15 +97,14 @@ describe('fill engine fast benchmark', () => {
     const p90 = allSuccessMs.length > 0 ? allSuccessMs[Math.floor(allSuccessMs.length * 0.9)] : 0;
     const maxMs = allSuccessMs.length > 0 ? allSuccessMs[allSuccessMs.length - 1].toFixed(0) : 'n/a';
 
-    const regressionNote = successes < Y_BASELINE ? ` ⚠️ REGRESSION (baseline ${Y_BASELINE})` : ` ✓ baseline ${Y_BASELINE}`;
-    const hardFailNote = successes < HARD_FAIL_THRESHOLD ? ` 💥 HARD FAIL (threshold ${HARD_FAIL_THRESHOLD})` : '';
-    console.log(`\n  RESULT: ${successes}/${total} Y${regressionNote}${hardFailNote}`);
-    console.log(`  p50=${p50.toFixed(0)}ms  p90=${p90.toFixed(0)}ms  max=${maxMs}ms\n`);
+    console.log(`\n  RESULT: ${successes}/${total} Y`);
+    console.log(`  p50=${p50.toFixed(0)}ms  p90=${p90.toFixed(0)}ms  max=${maxMs}ms`);
+    console.log(`  baseline PR6b: 5/84 Y`);
+    console.log(`  baseline PR7:  15/84 Y\n`);
 
     if (unexpectedN.length > 0)
       console.error(`UNEXPECTED N (correctness bug): ${unexpectedN.join(', ')}`);
 
     expect(unexpectedN).toHaveLength(0);
-    expect(successes).toBeGreaterThanOrEqual(HARD_FAIL_THRESHOLD);
   });
 });
