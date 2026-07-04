@@ -1,28 +1,29 @@
 /**
- * Fill engine — string-based crossword filling with queue-based AC propagation.
- * Uses LetterMask = {lo, hi} for up to 64-letter alphabets. Correctness first.
+ * Fill engine — typed-array based crossword filling with queue-based AC propagation.
+ * Uses LetterMask = {lo, hi} for up to 64-letter alphabets.
+ * PR8: integer word encoding, typed-array frame cloning, O(1) slot selection.
  */
 
-import { Alphabet, LetterMask, MutableLetterMask, ENGLISH } from './Alphabet';
+import { Alphabet, LetterMask, ENGLISH } from './Alphabet';
 
 // ---------------------------------------------------------------------------
-// Inline LetterMask helpers (module-scope)
+// Raw bit operations — module-private, no Alphabet dependency.
+// Hot-path counterparts to Alphabet's LetterMask-based API.
 // ---------------------------------------------------------------------------
 
-const EMPTY_MASK: LetterMask = { lo: 0, hi: 0 };
-function maskEmpty(m: LetterMask): boolean { return m.lo === 0 && m.hi === 0; }
-function maskSingle(m: LetterMask): boolean {
-  return (m.lo !== 0 && (m.lo & (m.lo - 1)) === 0 && m.hi === 0) ||
-         (m.lo === 0 && m.hi !== 0 && (m.hi & (m.hi - 1)) === 0);
+function isEmptyRaw(lo: number, hi: number): boolean { return lo === 0 && hi === 0; }
+function isSingleLetterRaw(lo: number, hi: number): boolean {
+  if (lo !== 0 && hi !== 0) return false;
+  if (lo !== 0) return (lo & (lo - 1)) === 0;
+  return hi !== 0 && (hi & (hi - 1)) === 0;
 }
-function maskAnd(a: LetterMask, b: LetterMask): LetterMask { return { lo: a.lo & b.lo, hi: a.hi & b.hi }; }
-// maskOr kept for propagateConstraints
-function maskOr(a: LetterMask, b: LetterMask): LetterMask { return { lo: a.lo | b.lo, hi: a.hi | b.hi }; }
-function maskAccumulate(acc: MutableLetterMask, m: LetterMask): void { acc.lo |= m.lo; acc.hi |= m.hi; }
-function maskContains(m: LetterMask, bit: LetterMask): boolean { return (m.lo & bit.lo) !== 0 || (m.hi & bit.hi) !== 0; }
-function maskEquals(a: LetterMask, b: LetterMask): boolean { return a.lo === b.lo && a.hi === b.hi; }
-function maskHasMultiple(m: LetterMask): boolean { return !maskEmpty(m) && !maskSingle(m); }
-function maskRemoveBit(m: LetterMask, bit: LetterMask): LetterMask { return { lo: m.lo & ~bit.lo, hi: m.hi & ~bit.hi }; }
+function hasLetterAtRaw(lo: number, hi: number, i: number): boolean {
+  return i < 32 ? (lo & (1 << i)) !== 0 : (hi & (1 << (i - 32))) !== 0;
+}
+function removeLo(lo: number, i: number): number { return i < 32 ? lo & ~(1 << i) : lo; }
+function removeHi(hi: number, i: number): number { return i >= 32 ? hi & ~(1 << (i - 32)) : hi; }
+function onlyLo(lo: number, i: number): number { return i < 32 ? lo & (1 << i) : 0; }
+function onlyHi(hi: number, i: number): number { return i >= 32 ? hi & (1 << (i - 32)) : 0; }
 
 // ---------------------------------------------------------------------------
 // Public API types
@@ -98,7 +99,6 @@ export interface SlotTopology {
 // Helpers
 // ---------------------------------------------------------------------------
 
-// Seeded PRNG (mulberry32)
 function makePRNG(seed: number): () => number {
   let s = seed;
   return () => {
@@ -108,6 +108,10 @@ function makePRNG(seed: number): () => number {
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+}
+
+function seededSample<T>(arr: T[], rng: () => number): T {
+  return arr[Math.floor(rng() * arr.length)];
 }
 
 // ---------------------------------------------------------------------------
@@ -120,11 +124,7 @@ export function buildSlotTopology(size: number, blacks: boolean[][]): SlotTopolo
     Array.from({ length: size }, () => [])
   );
 
-  const dirs: Array<[number, number, 'across' | 'down']> = [
-    [0, 1, 'across'],
-    [1, 0, 'down'],
-  ];
-  for (const [dr, dc, dir] of dirs) {
+  for (const [dr, dc, dir] of [[0, 1, 'across'], [1, 0, 'down']] as [number, number, 'across' | 'down'][]) {
     for (let r = 0; r < size; r++) {
       for (let c = 0; c < size; c++) {
         if (blacks[r][c]) continue;
@@ -160,50 +160,81 @@ export function buildSlotTopology(size: number, blacks: boolean[][]): SlotTopolo
 }
 
 // ---------------------------------------------------------------------------
-// FillEngineInstance
+// Internal slot representation
 // ---------------------------------------------------------------------------
 
-interface InternalSlot {
+interface Slot {
   id: number;
   cells: Array<{ row: number; col: number }>;
   direction: 'across' | 'down';
   len: number;
+  crossings: Array<{ slotId: number; posInCross: number } | null>;
 }
 
-interface StackFrame {
-  slotId: number;
-  word: string;
-  cellMasks: LetterMask[];
-  slotCandidates: string[][];
-  attempted: Map<number, Set<string>>;
+interface Frame {
+  cellMasksLo: Int32Array;
+  cellMasksHi: Int32Array;
+  slotValidLen: Int32Array;
   wordSupport: Int32Array;
+  slotUndecidedCount: Int32Array;
+  slotId: number;
+  wordTried: number;
+  wordSwaps: Array<[number, number, number]>;   // [slotId, posA, posB]
+  attemptedAdded: Array<[number, number]>;       // [slotId, wordIdx] added during this frame
+  undecidedCells: number;
 }
+
+// ---------------------------------------------------------------------------
+// FillEngineInstance
+// ---------------------------------------------------------------------------
 
 export class FillEngineInstance {
   private size: number;
   private blacks: boolean[][];
   private alphabet: Alphabet;
   private wordsByLength: Map<number, string[]>;
-  private bankWordsSet: Set<string>;
+
+  // Word encoding — assign a global integer index to each word
+  private encodedWords: Uint8Array;   // flat [wordIdx * encodedMaxLen + pos] = letterIdx
+  private encodedMaxLen: number;
+  private wordStrings: string[];      // wordIdx → string
+  private stringToWordIdx: Map<string, number>;
+  private bankSet: Set<number>;       // word indices that are bank words
+
   private rng: () => number;
   private deadline: number;
   private maxSteps: number;
 
-  private slots: InternalSlot[];
+  private slots: Slot[];
   private cellToSlots: Array<Array<Array<{ slotId: number; posInSlot: number }>>>;
-  private cellMasks: LetterMask[]; // flat size*size
-  private slotCandidates: string[][];
-  private attempted: Map<number, Set<string>> = new Map();
-  private stack: StackFrame[] = [];
+  private numSlots: number;
+  private maxLen: number;
 
-  // AC propagation state
-  private alphaSize: number;
-  private maxSlotLen: number;
-  // wordSupport[si * maxSlotLen * alphaSize + p * alphaSize + li] = number of
-  // candidates in slotCandidates[si] that have letter li at position p.
+  // slotWords[si][0..slotValidLen[si]-1] = valid candidate indices; beyond validLen are tombstoned
+  private slotWords: Int32Array[];
+  private slotValidLen: Int32Array;
+
+  // Flat cell mask arrays — bits 0-31 = alphabet indices 0-31/32-63
+  private cellMasksLo: Int32Array;
+  private cellMasksHi: Int32Array;
+
+  // wordSupport[supportIdx(si, p, li)] = count of valid candidates in slot si with letter li at pos p
   private wordSupport: Int32Array;
-  private slotsByLength: Map<number, number[]>; // length → slot indices
-  private propagateQueue: Array<[number, number, number]>; // [cellIdx, removedLo, removedHi]
+
+  // Undecided cell tracking for O(1) completion check and slot selection
+  private undecidedCells = 0;
+  private slotUndecidedCount!: Int32Array;
+  private slotsByLength: Map<number, number[]> = new Map();
+
+  // Propagation queue: [cellIdx, removedLo, removedHi]
+  private propagateQueue: Array<[number, number, number]> = [];
+  private propagateQueueHead = 0;
+
+  private stack: Frame[] = [];
+  // attempted[si] = word indices already tried for slot si in current ancestor context
+  private attempted: Map<number, Set<number>> = new Map();
+  // Swap log for the active frame (null when not in a frame)
+  private activeSwaps: Array<[number, number, number]> | null = null;
 
   private steps = 0;
   private backtracks = 0;
@@ -214,360 +245,388 @@ export class FillEngineInstance {
 
   constructor(config: FillConfig) {
     const {
-      size,
-      blacks,
-      wordsByLength,
-      bankWords = [],
-      seed = 42,
-      timeoutMs = 10000,
-      maxSteps = 400000,
+      size, blacks, wordsByLength,
+      bankWords = [], seed = 42,
+      timeoutMs = 10000, maxSteps = 400000,
     } = config;
     this.alphabet = config.alphabet ?? ENGLISH;
     this.size = size;
     this.blacks = blacks;
     this.wordsByLength = wordsByLength;
-    this.bankWordsSet = new Set(bankWords);
     this.rng = makePRNG(seed);
     this.deadline = timeoutMs === Infinity ? Date.now() + 1e15 : Date.now() + timeoutMs;
     this.maxSteps = maxSteps === 0 ? Infinity : maxSteps;
 
-    const topo = buildSlotTopology(size, blacks);
-    this.slots = topo.slots.map(s => ({
-      id: s.id, cells: s.cells, direction: s.direction, len: s.len,
-    }));
-    this.cellToSlots = topo.cellToSlots;
+    ({ slots: this.slots, cellToSlots: this.cellToSlots } = buildSlotTopology(size, blacks) as { slots: Slot[]; cellToSlots: SlotTopology['cellToSlots'] });
+    this.numSlots = this.slots.length;
+    this.maxLen = this.slots.reduce((m, s) => Math.max(m, s.len), 0);
 
-    // Initialize cell masks
-    this.cellMasks = new Array(size * size).fill(EMPTY_MASK);
-    for (let r = 0; r < size; r++) {
-      for (let c = 0; c < size; c++) {
-        this.cellMasks[r * size + c] = blacks[r][c] ? EMPTY_MASK : this.alphabet.ALL;
+    // Build word encoding table — assign a global integer index to every word
+    this.encodedMaxLen = this.maxLen;
+    this.wordStrings = [];
+    this.stringToWordIdx = new Map();
+    const slotLengths = new Set(this.slots.map(s => s.len));
+    const seenWords = new Set<string>();
+    const alpha = this.alphabet;
+
+    wordsByLength.forEach((ws, len) => {
+      if (!slotLengths.has(len)) return;
+      for (const w of ws) {
+        if (seenWords.has(w)) continue;
+        // Filter words with letters outside the alphabet
+        let valid = true;
+        for (let i = 0; i < w.length; i++) {
+          if (!alpha.hasLetter(w[i])) { valid = false; break; }
+        }
+        if (!valid) continue;
+        seenWords.add(w);
+        this.stringToWordIdx.set(w, this.wordStrings.length);
+        this.wordStrings.push(w);
+      }
+    });
+    for (const w of bankWords) {
+      if (seenWords.has(w)) continue;
+      let valid = true;
+      for (let i = 0; i < w.length; i++) {
+        if (!alpha.hasLetter(w[i])) { valid = false; break; }
+      }
+      if (!valid) continue;
+      seenWords.add(w);
+      this.stringToWordIdx.set(w, this.wordStrings.length);
+      this.wordStrings.push(w);
+    }
+
+    this.encodedWords = new Uint8Array(this.wordStrings.length * this.encodedMaxLen);
+    for (let idx = 0; idx < this.wordStrings.length; idx++) {
+      const w = this.wordStrings[idx];
+      for (let p = 0; p < w.length && p < this.encodedMaxLen; p++) {
+        this.encodedWords[idx * this.encodedMaxLen + p] = alpha.letterIndex(w[p]);
       }
     }
 
-    // Initialize slot candidates: bank words first, then dict
-    this.slotCandidates = this.slots.map(slot => {
-      const dictWords = wordsByLength.get(slot.len) ?? [];
-      const bankMatch = bankWords.filter(w => w.length === slot.len);
-      const seen = new Set<string>();
-      const out: string[] = [];
+    this.bankSet = new Set<number>();
+    for (const w of bankWords) {
+      const idx = this.stringToWordIdx.get(w);
+      if (idx !== undefined) this.bankSet.add(idx);
+    }
+
+    // slotWords: bank words first, then dict words (per-slot)
+    this.slotWords = this.slots.map(s => {
+      const dictWords = wordsByLength.get(s.len) ?? [];
+      const bankMatch = bankWords.filter(w => w.length === s.len);
+      const seen = new Set<number>();
+      const out: number[] = [];
       for (const w of bankMatch) {
-        if (!seen.has(w) && this.wordValid(w)) { seen.add(w); out.push(w); }
+        const idx = this.stringToWordIdx.get(w);
+        if (idx !== undefined && !seen.has(idx)) { seen.add(idx); out.push(idx); }
       }
       for (const w of dictWords) {
-        if (!seen.has(w) && this.wordValid(w)) { seen.add(w); out.push(w); }
+        const idx = this.stringToWordIdx.get(w);
+        if (idx !== undefined && !seen.has(idx)) { seen.add(idx); out.push(idx); }
       }
-      return out;
+      return new Int32Array(out);
     });
 
-    // AC propagation setup
-    this.alphaSize = this.alphabet.size;
-    this.maxSlotLen = this.slots.reduce((max, s) => Math.max(max, s.len), 1);
-    this.wordSupport = new Int32Array(this.slots.length * this.maxSlotLen * this.alphaSize);
-    this.slotsByLength = new Map<number, number[]>();
-    for (let si = 0; si < this.slots.length; si++) {
+    this.slotValidLen = new Int32Array(this.numSlots);
+    for (let i = 0; i < this.numSlots; i++) this.slotValidLen[i] = this.slotWords[i].length;
+
+    // Cell masks: all-letters initially, zero for black cells
+    this.cellMasksLo = new Int32Array(size * size).fill(alpha.ALL.lo);
+    this.cellMasksHi = new Int32Array(size * size).fill(alpha.ALL.hi);
+    for (let r = 0; r < size; r++) {
+      for (let c = 0; c < size; c++) {
+        if (blacks[r][c]) {
+          this.cellMasksLo[r * size + c] = 0;
+          this.cellMasksHi[r * size + c] = 0;
+        }
+      }
+    }
+
+    // Word support counts
+    this.wordSupport = new Int32Array(this.numSlots * this.maxLen * alpha.size);
+    for (let si = 0; si < this.numSlots; si++) {
+      const ws = this.slotWords[si];
       const len = this.slots[si].len;
-      if (!this.slotsByLength.has(len)) this.slotsByLength.set(len, []);
-      this.slotsByLength.get(len)!.push(si);
-    }
-    this.propagateQueue = [];
-    for (let si = 0; si < this.slots.length; si++) {
-      this.initSlotSupport(si);
-    }
-
-    // Slots starting with exactly 1 candidate must eliminate that word from
-    // same-length slots now, before seeding constraints.
-    for (let si = 0; si < this.slots.length; si++) {
-      if (this.slotCandidates[si].length === 1) {
-        if (!this.propagateForcedSlot(si)) {
-          this.propagateQueue = [];
-          this.finished = true;
-          this.succeeded = false;
-          return;
+      for (let wi = 0; wi < ws.length; wi++) {
+        const wordIdx = ws[wi];
+        for (let p = 0; p < len; p++) {
+          this.wordSupport[this.supportIdx(si, p, this.encodedWords[wordIdx * this.encodedMaxLen + p])]++;
         }
       }
     }
 
-    // Seed queue with letters that have no support, then propagate to fixed point
-    this.seedInitialConstraints();
-    if (!this.propagate()) {
-      this.finished = true;
-      this.succeeded = false;
+    // Undecided cell tracking
+    this.slotUndecidedCount = new Int32Array(this.numSlots);
+    for (let si = 0; si < this.numSlots; si++) {
+      this.slotUndecidedCount[si] = this.slots[si].len;
+      this.undecidedCells += this.slots[si].len;
     }
-  }
-
-  private wordValid(w: string): boolean {
-    for (let i = 0; i < w.length; i++) {
-      if (!this.alphabet.hasLetter(w[i])) return false;
-    }
-    return true;
-  }
-
-  private cellIdx(r: number, c: number): number {
-    return r * this.size + c;
-  }
-
-  private supportIdx(si: number, p: number, li: number): number {
-    return si * this.maxSlotLen * this.alphaSize + p * this.alphaSize + li;
-  }
-
-  // Initialize (or reinitialize) wordSupport counts for slot si from slotCandidates[si].
-  private initSlotSupport(si: number): void {
-    const slot = this.slots[si];
-    const base = si * this.maxSlotLen * this.alphaSize;
-    for (let p = 0; p < slot.len; p++)
-      for (let li = 0; li < this.alphaSize; li++)
-        this.wordSupport[base + p * this.alphaSize + li] = 0;
-    for (const w of this.slotCandidates[si])
-      for (let p = 0; p < slot.len; p++)
-        this.wordSupport[base + p * this.alphaSize + this.alphabet.letterIndex(w[p])]++;
-  }
-
-  // For each (slot, position), find letters with zero support and enqueue their removal.
-  private seedInitialConstraints(): void {
-    for (let si = 0; si < this.slots.length; si++) {
-      const slot = this.slots[si];
-      const base = si * this.maxSlotLen * this.alphaSize;
-      for (let p = 0; p < slot.len; p++) {
-        const cIdx = this.cellIdx(slot.cells[p].row, slot.cells[p].col);
-        const oldMask = this.cellMasks[cIdx];
-        const supported: MutableLetterMask = { lo: 0, hi: 0 };
-        for (let li = 0; li < this.alphaSize; li++) {
-          if (this.wordSupport[base + p * this.alphaSize + li] > 0) {
-            maskAccumulate(supported, this.alphabet.onlyLetterAt(li));
-          }
-        }
-        const newMask = maskAnd(oldMask, supported);
-        if (!maskEquals(newMask, oldMask)) {
-          this.cellMasks[cIdx] = newMask;
-          this.propagateQueue.push([cIdx, oldMask.lo & ~newMask.lo, oldMask.hi & ~newMask.hi]);
+    // Subtract cells shared by two slots (counted once per slot, deduplicate)
+    // Actually: count unique cells in slots
+    {
+      const counted = new Set<number>();
+      for (let si = 0; si < this.numSlots; si++) {
+        for (const { row, col } of this.slots[si].cells) {
+          counted.add(row * size + col);
         }
       }
+      this.undecidedCells = counted.size;
+    }
+
+    // Precompute slot groups by length
+    for (let si = 0; si < this.numSlots; si++) {
+      const len = this.slots[si].len;
+      let group = this.slotsByLength.get(len);
+      if (!group) { group = []; this.slotsByLength.set(len, group); }
+      group.push(si);
     }
   }
 
-  // Decrement wordSupport for each position of `word` in slot `si`.
-  // When support for a letter hits 0, remove it from the cell mask and enqueue.
-  // Returns false on contradiction (empty cell mask).
-  private decrementWordSupport(si: number, word: string): boolean {
-    const slot = this.slots[si];
-    const base = si * this.maxSlotLen * this.alphaSize;
+  private supportIdx(slotId: number, pos: number, letter: number): number {
+    return slotId * this.maxLen * this.alphabet.size + pos * this.alphabet.size + letter;
+  }
+
+  private updateCellMask(ccIdx: number, newLo: number, newHi: number): void {
+    const oldLo = this.cellMasksLo[ccIdx], oldHi = this.cellMasksHi[ccIdx];
+    const wasUndecided = !isSingleLetterRaw(oldLo, oldHi) && !isEmptyRaw(oldLo, oldHi);
+    const nowUndecided = !isSingleLetterRaw(newLo, newHi) && !isEmptyRaw(newLo, newHi);
+    if (wasUndecided !== nowUndecided) {
+      const delta = wasUndecided ? -1 : 1;
+      if (wasUndecided) this.undecidedCells--;
+      else this.undecidedCells++;
+      const row = Math.floor(ccIdx / this.size), col = ccIdx % this.size;
+      for (const { slotId } of this.cellToSlots[row][col]) {
+        this.slotUndecidedCount[slotId] += delta;
+      }
+    }
+    this.cellMasksLo[ccIdx] = newLo;
+    this.cellMasksHi[ccIdx] = newHi;
+  }
+
+  // Decrement support for a word being removed from slot. When support for a
+  // letter at a position drops to zero, remove it from the crossing cell mask.
+  private decrementSupportForWord(wordIdx: number, slotId: number, slot: Slot): boolean {
+    const size = this.size;
     for (let p = 0; p < slot.len; p++) {
-      const li = this.alphabet.letterIndex(word[p]);
-      const sIdx = base + p * this.alphaSize + li;
-      this.wordSupport[sIdx]--;
-      if (this.wordSupport[sIdx] === 0) {
-        const cIdx = this.cellIdx(slot.cells[p].row, slot.cells[p].col);
-        const letterMask = this.alphabet.forLetter(word[p]);
-        const oldMask = this.cellMasks[cIdx];
-        if (!maskContains(oldMask, letterMask)) continue;
-        const newMask = maskRemoveBit(oldMask, letterMask);
-        if (maskEmpty(newMask)) {
+      const li = this.encodedWords[wordIdx * this.encodedMaxLen + p];
+      const idx = this.supportIdx(slotId, p, li);
+      this.wordSupport[idx]--;
+      if (this.wordSupport[idx] === 0) {
+        const { row, col } = slot.cells[p];
+        const ccIdx = row * size + col;
+        const clo = this.cellMasksLo[ccIdx], chi = this.cellMasksHi[ccIdx];
+        if (!hasLetterAtRaw(clo, chi, li)) continue;
+        const newLo = removeLo(clo, li);
+        const newHi = removeHi(chi, li);
+        this.updateCellMask(ccIdx, newLo, newHi);
+        if (newLo === 0 && newHi === 0) {
           this.propagateQueue.length = 0;
+          this.propagateQueueHead = 0;
           return false;
         }
-        this.cellMasks[cIdx] = newMask;
-        this.propagateQueue.push([cIdx, oldMask.lo & ~newMask.lo, oldMask.hi & ~newMask.hi]);
+        this.propagateQueue.push([ccIdx, clo & ~newLo, chi & ~newHi]);
       }
     }
     return true;
   }
 
-  // Remove `word` from slot `si`'s candidates and update support counts.
-  // Handles forced-slot detection (1 candidate remaining).
-  // Returns false on contradiction.
-  private removeWordFromSlot(si: number, word: string): boolean {
-    const arr = this.slotCandidates[si];
-    const idx = arr.indexOf(word);
-    if (idx === -1) return true;
-    arr.splice(idx, 1);
-    if (!this.decrementWordSupport(si, word)) return false;
-    if (arr.length === 0 && (this.wordsByLength.get(this.slots[si].len)?.length ?? 0) > 0) {
-      this.propagateQueue.length = 0;
-      return false;
-    }
-    if (arr.length === 1) {
-      if (!this.propagateForcedSlot(si)) return false;
-    }
-    return true;
-  }
-
-  // When slot `si` has exactly 1 candidate, remove that word from all same-length slots
-  // to enforce uniqueness.
-  private propagateForcedSlot(si: number): boolean {
-    if (this.slotCandidates[si].length !== 1) return true;
-    const word = this.slotCandidates[si][0];
-    const len = this.slots[si].len;
-    for (const other of (this.slotsByLength.get(len) ?? [])) {
-      if (other === si) continue;
-      if (!this.removeWordFromSlot(other, word)) return false;
-    }
-    return true;
-  }
-
-  // Drain the propagation queue. For each cell update, remove candidates from
-  // crossing slots that have a removed letter at the crossing position.
   private propagate(): boolean {
-    while (this.propagateQueue.length > 0) {
-      const [cIdx, removedLo, removedHi] = this.propagateQueue.shift()!;
-      const r = Math.floor(cIdx / this.size);
-      const c = cIdx % this.size;
-      for (const { slotId: si, posInSlot } of this.cellToSlots[r][c]) {
-        const toRemove: string[] = [];
-        for (const w of this.slotCandidates[si]) {
-          const bit = this.alphabet.forLetter(w[posInSlot]);
-          if ((bit.lo & removedLo) !== 0 || (bit.hi & removedHi) !== 0) {
-            toRemove.push(w);
+    const size = this.size;
+    while (this.propagateQueueHead < this.propagateQueue.length) {
+      const [cellIdx, removedLo, removedHi] = this.propagateQueue[this.propagateQueueHead++];
+      const row = Math.floor(cellIdx / size);
+      const col = cellIdx % size;
+
+      for (const { slotId, posInSlot } of this.cellToSlots[row][col]) {
+        const slot = this.slots[slotId];
+        const ws = this.slotWords[slotId];
+
+        // Extract each set bit individually to get the removed letter index
+        for (let half = 0; half < 2; half++) {
+          let bits = (half === 0 ? removedLo : removedHi) | 0;
+          const base = half * 32;
+          while (bits !== 0) {
+            const lsb = bits & -bits;
+            const removedLetter = base + (31 - Math.clz32(lsb));
+            bits ^= lsb;
+
+            let newValidLen = this.slotValidLen[slotId];
+            for (let wi = 0; wi < newValidLen; ) {
+              const w = ws[wi];
+              if (this.encodedWords[w * this.encodedMaxLen + posInSlot] === removedLetter) {
+                newValidLen--;
+                this.activeSwaps?.push([slotId, wi, newValidLen]);
+                ws[wi] = ws[newValidLen];
+                ws[newValidLen] = w;
+                if (!this.decrementSupportForWord(w, slotId, slot)) {
+                  this.slotValidLen[slotId] = newValidLen;
+                  return false;
+                }
+              } else {
+                wi++;
+              }
+            }
+            this.slotValidLen[slotId] = newValidLen;
+
+            if (newValidLen === 1 && !this.propagateForcedSlot(slotId)) {
+              this.propagateQueue.length = 0;
+              this.propagateQueueHead = 0;
+              return false;
+            }
+            if (newValidLen === 0 && (this.wordsByLength.get(slot.len)?.length ?? 0) > 0) {
+              this.propagateQueue.length = 0;
+              this.propagateQueueHead = 0;
+              return false;
+            }
           }
         }
-        for (const w of toRemove) {
-          if (!this.removeWordFromSlot(si, w)) return false;
-        }
       }
+    }
+    this.propagateQueue.length = 0;
+    this.propagateQueueHead = 0;
+    return true;
+  }
+
+  private propagateForcedSlot(slotId: number): boolean {
+    const forcedWordIdx = this.slotWords[slotId][0];
+    const sameLen = this.slotsByLength.get(this.slots[slotId].len) ?? [];
+    for (const si of sameLen) {
+      if (si === slotId) continue;
+      if (!this.removeWordFromSlotByIdx(forcedWordIdx, si)) return false;
     }
     return true;
   }
 
-  setPlacedLetters(placedLetters: Map<string, string>): boolean {
-    const entries = Array.from(placedLetters.entries());
-    for (let i = 0; i < entries.length; i++) {
-      const [key, letter] = entries[i];
-      const [rs, cs] = key.split(',');
-      const r = parseInt(rs, 10), c = parseInt(cs, 10);
-      if (!this.alphabet.hasLetter(letter)) {
-        this.finished = true;
-        this.succeeded = false;
+  private removeWordFromSlotByIdx(wordIdx: number, slotId: number): boolean {
+    const slot = this.slots[slotId];
+    const ws = this.slotWords[slotId];
+    const validLen = this.slotValidLen[slotId];
+
+    let found = -1;
+    for (let wi = 0; wi < validLen; wi++) {
+      if (ws[wi] === wordIdx) { found = wi; break; }
+    }
+    if (found === -1) return true;
+
+    const newValidLen = validLen - 1;
+    this.activeSwaps?.push([slotId, found, newValidLen]);
+    ws[found] = ws[newValidLen];
+    ws[newValidLen] = wordIdx;
+    this.slotValidLen[slotId] = newValidLen;
+
+    if (newValidLen === 0) {
+      this.propagateQueue.length = 0;
+      this.propagateQueueHead = 0;
+      return false;
+    }
+    if (newValidLen === 1 && !this.propagateForcedSlot(slotId)) return false;
+
+    return this.decrementSupportForWord(wordIdx, slotId, slot);
+  }
+
+  // Remove a word by string from a slot (used in setPlacedLetters path)
+  private removeWordFromSlot(word: string, slotId: number): boolean {
+    const wordIdx = this.stringToWordIdx.get(word);
+    if (wordIdx === undefined) return true;
+    return this.removeWordFromSlotByIdx(wordIdx, slotId);
+  }
+
+  private applyWord(slotId: number, wordIdx: number): boolean {
+    const slot = this.slots[slotId];
+    const size = this.size;
+    for (let p = 0; p < slot.len; p++) {
+      const li = this.encodedWords[wordIdx * this.encodedMaxLen + p];
+      const ccIdx = slot.cells[p].row * size + slot.cells[p].col;
+      const clo = this.cellMasksLo[ccIdx], chi = this.cellMasksHi[ccIdx];
+      const newLo = onlyLo(clo, li);
+      const newHi = onlyHi(chi, li);
+      if (newLo === clo && newHi === chi) continue;
+      this.updateCellMask(ccIdx, newLo, newHi);
+      if (newLo === 0 && newHi === 0) {
+        this.propagateQueue.length = 0;
+        this.propagateQueueHead = 0;
         return false;
       }
-      if (this.blacks[r][c]) continue;
-      const cIdx = this.cellIdx(r, c);
-      const oldMask = this.cellMasks[cIdx];
-      const newMask = this.alphabet.forLetter(letter);
-      if (!maskEquals(newMask, oldMask)) {
-        this.cellMasks[cIdx] = newMask;
-        this.propagateQueue.push([cIdx, oldMask.lo & ~newMask.lo, oldMask.hi & ~newMask.hi]);
-      }
+      this.propagateQueue.push([ccIdx, clo & ~newLo, chi & ~newHi]);
     }
-    const ok = this.propagate();
-    if (!ok) {
-      this.finished = true;
-      this.succeeded = false;
-      return false;
-    }
-    if (!this.checkWordUniqueness()) {
-      this.finished = true;
-      this.succeeded = false;
-      return false;
-    }
-    return true;
-  }
-
-  // Check that no two decided slots of the same length share the same word.
-  private checkWordUniqueness(): boolean {
-    const usedByLength = new Map<number, Set<string>>();
-    for (const slot of this.slots) {
-      let decided = true;
-      let word = '';
-      for (const { row, col } of slot.cells) {
-        const m = this.cellMasks[this.cellIdx(row, col)];
-        if (!maskSingle(m)) { decided = false; break; }
-        word += this.alphabet.getSingleLetter(m);
-      }
-      if (!decided) continue;
-      let seen = usedByLength.get(slot.len);
-      if (!seen) { seen = new Set<string>(); usedByLength.set(slot.len, seen); }
-      if (seen.has(word)) return false;
-      seen.add(word);
-    }
-    return true;
-  }
-
-  // Pick slot with fewest candidates that still has undecided cells
-  private pickSlot(): number {
-    let best = -1;
-    let bestCount = Infinity;
-    for (let si = 0; si < this.slots.length; si++) {
-      const slot = this.slots[si];
-      let undecided = false;
-      for (const { row, col } of slot.cells) {
-        const m = this.cellMasks[this.cellIdx(row, col)];
-        if (maskHasMultiple(m)) { undecided = true; break; }
-      }
-      if (!undecided) continue;
-      const n = this.slotCandidates[si].length;
-      if (n < bestCount) { bestCount = n; best = si; }
-    }
-    return best;
-  }
-
-  private applyWord(slotId: number, word: string): boolean {
-    const slot = this.slots[slotId];
-
-    // Remove word from same-length slots (uniqueness) before pinning, so their
-    // support counts are decremented while slotCandidates[slotId] is still full.
-    for (const other of (this.slotsByLength.get(slot.len) ?? [])) {
-      if (other === slotId) continue;
-      if (!this.removeWordFromSlot(other, word)) return false;
-    }
-
-    // Pin each cell in this slot to the word's letter, enqueue any removals
-    for (let p = 0; p < slot.len; p++) {
-      const cIdx = this.cellIdx(slot.cells[p].row, slot.cells[p].col);
-      const oldMask = this.cellMasks[cIdx];
-      const newMask = this.alphabet.forLetter(word[p]);
-      if (!maskEquals(newMask, oldMask)) {
-        this.cellMasks[cIdx] = newMask;
-        this.propagateQueue.push([cIdx, oldMask.lo & ~newMask.lo, oldMask.hi & ~newMask.hi]);
-      }
-    }
-
-    // Commit this slot to the single candidate and rebuild its support counts
-    this.slotCandidates[slotId] = [word];
-    this.initSlotSupport(slotId);
-
     return this.propagate();
   }
 
-  private pushFrame(slotId: number, word: string): void {
-    const attemptedCopy = new Map<number, Set<string>>();
-    this.attempted.forEach((v, k) => attemptedCopy.set(k, new Set(v)));
+  private pickSlot(): number {
+    let bestSlot = -1;
+    let bestCount = Infinity;
+    for (let si = 0; si < this.numSlots; si++) {
+      if (this.slotUndecidedCount[si] === 0) continue;
+      const vl = this.slotValidLen[si];
+      if (vl < bestCount) { bestCount = vl; bestSlot = si; }
+    }
+    return bestSlot;
+  }
+
+  private pushFrame(slotId: number, wordIdx: number): void {
+    const wordSwaps: Array<[number, number, number]> = [];
+    const attemptedAdded: Array<[number, number]> = [];
     this.stack.push({
-      slotId,
-      word,
-      cellMasks: this.cellMasks.slice(),
-      slotCandidates: this.slotCandidates.map(a => a.slice()),
-      attempted: attemptedCopy,
+      cellMasksLo: this.cellMasksLo.slice(),
+      cellMasksHi: this.cellMasksHi.slice(),
+      slotValidLen: this.slotValidLen.slice(),
       wordSupport: this.wordSupport.slice(),
+      slotUndecidedCount: this.slotUndecidedCount.slice(),
+      slotId,
+      wordTried: wordIdx,
+      wordSwaps,
+      attemptedAdded,
+      undecidedCells: this.undecidedCells,
     });
+    this.activeSwaps = wordSwaps;
   }
 
   private popFrame(): void {
     const frame = this.stack.pop()!;
-    this.cellMasks = frame.cellMasks;
-    this.slotCandidates = frame.slotCandidates;
-    this.attempted = frame.attempted;
-    this.wordSupport = frame.wordSupport;
-    this.propagateQueue = [];
-    let set = this.attempted.get(frame.slotId);
-    if (!set) { set = new Set<string>(); this.attempted.set(frame.slotId, set); }
-    set.add(frame.word);
+    this.cellMasksLo.set(frame.cellMasksLo);
+    this.cellMasksHi.set(frame.cellMasksHi);
+    this.slotValidLen.set(frame.slotValidLen);
+    this.wordSupport.set(frame.wordSupport);
+    this.slotUndecidedCount.set(frame.slotUndecidedCount);
+    this.undecidedCells = frame.undecidedCells;
+    // Undo word swaps in reverse to restore slotWords order
+    const swaps = frame.wordSwaps;
+    for (let i = swaps.length - 1; i >= 0; i--) {
+      const [si, posA, posB] = swaps[i];
+      const ws = this.slotWords[si];
+      const tmp = ws[posA]; ws[posA] = ws[posB]; ws[posB] = tmp;
+    }
+    this.activeSwaps = this.stack.length > 0 ? this.stack[this.stack.length - 1].wordSwaps : null;
+    // Undo attempted additions from this frame's subtree
+    for (let i = frame.attemptedAdded.length - 1; i >= 0; i--) {
+      const [sid, w] = frame.attemptedAdded[i];
+      this.attempted.get(sid)?.delete(w);
+    }
+    // Record this frame's tried word, propagate to parent's log
+    if (!this.attempted.has(frame.slotId)) this.attempted.set(frame.slotId, new Set<number>());
+    this.attempted.get(frame.slotId)!.add(frame.wordTried);
+    if (this.stack.length > 0) {
+      this.stack[this.stack.length - 1].attemptedAdded.push([frame.slotId, frame.wordTried]);
+    }
     this.backtracks++;
   }
 
   step(n: number): boolean {
     if (this.finished) return true;
 
-    for (let i = 0; i < n; i++) {
-      if (this.steps >= this.maxSteps) {
-        this.finished = true;
-        return true;
-      }
+    while (n-- > 0 && this.steps < this.maxSteps) {
+      this.steps++;
       if (Date.now() > this.deadline) {
         this.timedOut = true;
         this.finished = true;
         return true;
       }
-      this.steps++;
+
+      if (this.undecidedCells === 0) {
+        this.succeeded = true;
+        this.finished = true;
+        return true;
+      }
 
       const slotId = this.pickSlot();
       if (slotId === -1) {
@@ -576,67 +635,108 @@ export class FillEngineInstance {
         return true;
       }
 
-      const tried = this.attempted.get(slotId) ?? new Set<string>();
-      const cands = this.slotCandidates[slotId].filter(w => !tried.has(w));
+      const triedSet = this.attempted.get(slotId) ?? new Set<number>();
+      const validLen = this.slotValidLen[slotId];
+      const ws = this.slotWords[slotId];
 
-      const bankCands = cands.filter(w => this.bankWordsSet.has(w));
-      const useCands = bankCands.length > 0 ? bankCands : cands;
+      const bankCandidates: number[] = [];
+      const nonBankCandidates: number[] = [];
+      for (let wi = 0; wi < validLen; wi++) {
+        const w = ws[wi];
+        if (triedSet.has(w)) continue;
+        if (this.bankSet.has(w)) bankCandidates.push(w);
+        else nonBankCandidates.push(w);
+      }
 
-      if (useCands.length === 0) {
+      const candidates = bankCandidates.length > 0 ? bankCandidates : nonBankCandidates;
+
+      if (candidates.length === 0) {
         if (this.stack.length === 0) {
           this.finished = true;
-          this.succeeded = false;
           return true;
         }
         this.popFrame();
         continue;
       }
 
-      const word = useCands[Math.floor(this.rng() * useCands.length)];
-      this.pushFrame(slotId, word);
-      const ok = this.applyWord(slotId, word);
-      if (!ok) {
-        this.popFrame();
+      const wordIdx = seededSample(candidates, this.rng);
+      this.pushFrame(slotId, wordIdx);
+
+      // Remove from same-length slots first (uniqueness enforcement)
+      let ok = true;
+      const sameLen = this.slotsByLength.get(this.slots[slotId].len) ?? [];
+      for (const si of sameLen) {
+        if (si === slotId) continue;
+        if (!this.removeWordFromSlotByIdx(wordIdx, si)) { ok = false; break; }
       }
+      if (ok) ok = this.applyWord(slotId, wordIdx);
+      if (!ok) this.popFrame();
+    }
+
+    if (this.steps >= this.maxSteps) {
+      this.finished = true;
+      return true;
     }
     return false;
   }
 
-  getOptions(): string[][][] {
-    const out: string[][][] = [];
-    for (let r = 0; r < this.size; r++) {
-      const row: string[][] = [];
-      for (let c = 0; c < this.size; c++) {
-        if (this.blacks[r][c]) row.push([]);
-        else row.push(this.alphabet.getLetters(this.cellMasks[this.cellIdx(r, c)]));
-      }
-      out.push(row);
+  setPlacedLetters(placedLetters: Map<string, string>): boolean {
+    const size = this.size;
+    const alpha = this.alphabet;
+    placedLetters.forEach((letter, key) => {
+      if (!alpha.hasLetter(letter)) return;
+      const [rs, cs] = key.split(',');
+      const r = parseInt(rs, 10), c = parseInt(cs, 10);
+      if (this.blacks[r][c]) return;
+      const li = alpha.letterIndex(letter);
+      const ccIdx = r * size + c;
+      const clo = this.cellMasksLo[ccIdx], chi = this.cellMasksHi[ccIdx];
+      const newLo = onlyLo(clo, li);
+      const newHi = onlyHi(chi, li);
+      if (newLo === clo && newHi === chi) return;
+      this.updateCellMask(ccIdx, newLo, newHi);
+      this.propagateQueue.push([ccIdx, clo & ~newLo, chi & ~newHi]);
+    });
+    const ok = this.propagate();
+    if (!ok) {
+      this.finished = true;
+      this.succeeded = false;
     }
-    return out;
+    return ok;
+  }
+
+  getOptions(): string[][][] {
+    const size = this.size;
+    const alpha = this.alphabet;
+    return Array.from({ length: size }, (_u, r) =>
+      Array.from({ length: size }, (_u2, c) => {
+        if (this.blacks[r][c]) return [];
+        const mask: LetterMask = { lo: this.cellMasksLo[r * size + c], hi: this.cellMasksHi[r * size + c] };
+        if (alpha.isEmpty(mask)) return [];
+        return alpha.getLetters(mask);
+      })
+    );
   }
 
   private countCells(): { filledCells: number; totalCells: number } {
-    let filled = 0, total = 0;
-    for (let r = 0; r < this.size; r++) {
-      for (let c = 0; c < this.size; c++) {
+    const size = this.size;
+    let filledCells = 0, totalCells = 0;
+    for (let r = 0; r < size; r++) {
+      for (let c = 0; c < size; c++) {
         if (this.blacks[r][c]) continue;
-        total++;
-        const m = this.cellMasks[this.cellIdx(r, c)];
-        if (maskSingle(m)) filled++;
+        totalCells++;
+        const lo = this.cellMasksLo[r * size + c], hi = this.cellMasksHi[r * size + c];
+        if (isSingleLetterRaw(lo, hi)) filledCells++;
       }
     }
-    return { filledCells: filled, totalCells: total };
+    return { filledCells, totalCells };
   }
 
   getProgressUpdate(): FillProgressUpdate {
     const { filledCells, totalCells } = this.countCells();
-    const n = this.size * this.size;
-    const lo = new Int32Array(n);
-    const hi = new Int32Array(n);
-    for (let i = 0; i < n; i++) { lo[i] = this.cellMasks[i].lo; hi[i] = this.cellMasks[i].hi; }
     return {
-      cellMasksLo: lo,
-      cellMasksHi: hi,
+      cellMasksLo: this.cellMasksLo.slice(),
+      cellMasksHi: this.cellMasksHi.slice(),
       steps: this.steps,
       backtracks: this.backtracks,
       done: this.finished,
@@ -648,18 +748,18 @@ export class FillEngineInstance {
 
   getResult(): FillResult {
     const size = this.size;
-    const grid: string[][] = [];
-    for (let r = 0; r < size; r++) {
-      const row: string[] = [];
-      for (let c = 0; c < size; c++) {
-        if (this.blacks[r][c]) { row.push('.'); continue; }
-        const m = this.cellMasks[this.cellIdx(r, c)];
-        if (maskSingle(m)) {
-          row.push(this.alphabet.getSingleLetter(m));
-        } else row.push(' ');
-      }
-      grid.push(row);
-    }
+    const alpha = this.alphabet;
+    const grid: string[][] = Array.from({ length: size }, (_u, r) =>
+      Array.from({ length: size }, (_u2, c) => {
+        if (this.blacks[r][c]) return '.';
+        const lo = this.cellMasksLo[r * size + c], hi = this.cellMasksHi[r * size + c];
+        if (isSingleLetterRaw(lo, hi)) {
+          const mask: LetterMask = { lo, hi };
+          return alpha.getSingleLetter(mask);
+        }
+        return ' ';
+      })
+    );
     const { filledCells, totalCells } = this.countCells();
     const success = this.succeeded;
     const failureReason: FillFailureReason | null = success ? null

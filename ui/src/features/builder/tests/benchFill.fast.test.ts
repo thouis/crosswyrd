@@ -100,7 +100,8 @@ describe('fill engine fast benchmark', () => {
     console.log(`\n  RESULT: ${successes}/${total} Y`);
     console.log(`  p50=${p50.toFixed(0)}ms  p90=${p90.toFixed(0)}ms  max=${maxMs}ms`);
     console.log(`  baseline PR6b: 5/84 Y`);
-    console.log(`  baseline PR7:  15/84 Y\n`);
+    console.log(`  baseline PR7:  15/84 Y`);
+    console.log(`  baseline PR8:  66/84 Y  p50=169ms  p90=268ms\n`);
 
     if (unexpectedN.length > 0)
       console.error(`UNEXPECTED N (correctness bug): ${unexpectedN.join(', ')}`);

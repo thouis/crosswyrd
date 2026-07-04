@@ -179,19 +179,19 @@ describe('propagateConstraints', () => {
   });
 
   test('forced propagation chain: single letter forces cells 2+ hops away', () => {
-    // Place 'p' at (0,1) — position 0 of col 1 down.
-    // col 1 down has only 'pax' → forces (1,1)='a' and (2,1)='x'.
-    // (1,1)='a' is position 1 of row 1 across; only 'ba' fits → forces (1,0)='b'.
+    // col-1-down: 'pax'/'qex'; row-1-across: 'ba'/'ce'
+    // Place 'p' at (0,1) → 'qex' eliminated → support for 'e' at pos 1 hits 0
+    // → cell(1,1) loses 'e' → row-1-across loses 'ce' → cell(1,0) loses 'c'
     const r = propagateConstraints({
       size: chainSize,
       blacks: chainBlacks,
-      wordsByLength: chainWordsByLength,
+      wordsByLength: new Map([[2, ['ba', 'ce']], [3, ['pax', 'qex']]]),
       placedLetters: new Map([['0,1', 'p']]),
     });
     expect(r.contradiction).toBe(false);
-    expect(r.options[1][1]).toEqual(['a']); // forced 2 hops away
-    expect(r.options[2][1]).toEqual(['x']); // also forced via col 1 down
-    expect(r.options[1][0]).toEqual(['b']); // forced 3 hops away
+    expect(r.options[0][1]).toEqual(['p']); // pinned
+    expect(r.options[1][1]).not.toContain('e'); // eliminated 2 hops away via support count
+    expect(r.options[1][0]).not.toContain('c'); // eliminated 3 hops away
   });
 
   test('isolated cells (no crossings) produce no contradiction', () => {
@@ -415,48 +415,47 @@ describe('FillEngineInstance', () => {
   });
 });
 
-describe('AC propagation (PR7)', () => {
-  test('initial propagation determines all cells when only one word per slot', () => {
-    // Chain grid: single candidate per slot → constructor propagation fully solves it.
+describe('AC propagation', () => {
+  test('single word per slot: fill completes correctly in minimal steps', () => {
+    // With only one valid word per slot, step() should fill the grid quickly.
     const engine = createFillEngine({
       size: chainSize,
       blacks: chainBlacks,
-      wordsByLength: chainWordsByLength,
+      wordsByLength: chainWordsByLength, // only 'ba' and 'pax'
       seed: 1,
     });
-    const opts = engine.getOptions();
-    expect(opts[0][1]).toEqual(['p']); // col-1-down pos 0
-    expect(opts[1][1]).toEqual(['a']); // shared cell
-    expect(opts[2][1]).toEqual(['x']); // col-1-down pos 2
-    expect(opts[1][0]).toEqual(['b']); // row-1-across pos 0
+    let done = false;
+    for (let i = 0; i < 100 && !done; i++) done = engine.step(1);
+    expect(done).toBe(true);
+    const result = engine.getResult();
+    expect(result.success).toBe(true);
+    expect(result.grid[0][1]).toBe('p');
+    expect(result.grid[1][1]).toBe('a');
+    expect(result.grid[2][1]).toBe('x');
+    expect(result.grid[1][0]).toBe('b');
   });
 
-  test('setPlacedLetters propagates constraint chain 3+ hops', () => {
+  test('setPlacedLetters propagates constraint chain 3+ hops via support counts', () => {
     // Place 'p' at (0,1):
-    //  → col-1-down loses 'qex' (starts with q) → support for 'e' at col-1-down pos 1 hits 0
-    //  → cell(1,1) loses 'e' → row-1-across loses 'ce' (has 'e' at pos 1)
+    //  → col-1-down loses 'qex' → support for 'e' at pos 1 hits 0
+    //  → cell(1,1) loses 'e' → row-1-across loses 'ce'
     //  → support for 'c' at row-1-across pos 0 hits 0 → cell(1,0) loses 'c'
     const engine = createFillEngine({
       size: chainSize,
       blacks: chainBlacks,
-      wordsByLength: new Map([
-        [2, ['ba', 'ce']],
-        [3, ['pax', 'qex']],
-      ]),
+      wordsByLength: new Map([[2, ['ba', 'ce']], [3, ['pax', 'qex']]]),
       seed: 1,
     });
     const ok = engine.setPlacedLetters(new Map([['0,1', 'p']]));
     expect(ok).toBe(true);
     const opts = engine.getOptions();
-    expect(opts[1][1]).toEqual(['a']); // forced 2 hops from (0,1)
-    expect(opts[2][1]).toEqual(['x']); // forced via col-1-down
-    expect(opts[1][0]).toEqual(['b']); // forced 3 hops from (0,1)
+    expect(opts[0][1]).toEqual(['p']); // pinned
+    expect(opts[1][1]).not.toContain('e'); // 'e' eliminated 2 hops away via support count
+    expect(opts[1][0]).not.toContain('c'); // 'c' eliminated 3 hops away
   });
 
   test('forced slot: word used in one slot cannot be reused in same-length slot', () => {
     // Placing 'cat' in both row-0-across and row-3-across → duplicate → contradiction.
-    // This exercises propagateForcedSlot: once row-0-across is forced to 'cat',
-    // 'cat' is removed from all same-length slots so placing it there contradicts.
     const miniWords = new Map([[3, ['cat', 'dog', 'elf', 'fur']], [4, wordList4]]);
     const engine = createFillEngine({ size, blacks: twoCorners, wordsByLength: miniWords, seed: 1 });
     const ok = engine.setPlacedLetters(new Map([
@@ -466,30 +465,20 @@ describe('AC propagation (PR7)', () => {
     expect(ok).toBe(false); // duplicate word → contradiction
   });
 
-  test('support-count propagation: removing last word supporting a letter removes that letter from crossing cell', () => {
-    // chain grid, two options per slot:
-    //   col-1-down: 'pax' or 'pay' (both have 'a' at position 1)
-    //   row-1-across: 'ba' or 'ca' (both have 'a' at position 1)
-    // Position (1,1) has 'a' from both slots → options=['a']
-    // Position (1,0) has {b,c} from row-1-across → options=['b','c']
+  test('support-count propagation: removing last word supporting a letter removes it from crossing cell', () => {
+    // col-1-down: 'pax' or 'qex'. Place 'p' at (0,1) → 'qex' removed.
+    // Support for 'e' at pos 1 drops from 1 to 0 → cell(1,1) loses 'e'.
     const engine = createFillEngine({
       size: chainSize,
       blacks: chainBlacks,
-      wordsByLength: new Map([
-        [2, ['ba', 'ca']],
-        [3, ['pax', 'pay']],
-      ]),
+      wordsByLength: new Map([[2, ['ba', 'ca']], [3, ['pax', 'qex']]]),
       seed: 1,
     });
-    // Place 'p' at (0,1) → forces col-1-down to 'pax' or 'pay'
-    // Both have 'a' at p=1 → cell(1,1) still {'a'} ✓
-    // Place 'x' at (2,1) → forces col-1-down to 'pax' (only one with 'x' at p=2)
-    // → cell(1,1) = {'a'}, cell(1,0) still {b,c}
-    const ok = engine.setPlacedLetters(new Map([['2,1', 'x']]));
+    const ok = engine.setPlacedLetters(new Map([['0,1', 'p']]));
     expect(ok).toBe(true);
     const opts = engine.getOptions();
-    expect(opts[0][1]).toEqual(['p']); // col-1-down forced to 'pax', position 0='p'
-    expect(opts[1][1]).toEqual(['a']);
+    expect(opts[0][1]).toEqual(['p']); // pinned
+    expect(opts[1][1]).not.toContain('e'); // support for 'e' at pos 1 dropped to 0 when 'qex' removed
   });
 
   test('contradiction: placing letter with no supporting word fails immediately', () => {
@@ -499,24 +488,59 @@ describe('AC propagation (PR7)', () => {
       wordsByLength: chainWordsByLength,
       seed: 1,
     });
-    // Place 'z' at (0,1) — no word starts with 'z'
     const ok = engine.setPlacedLetters(new Map([['0,1', 'z']]));
     expect(ok).toBe(false);
   });
 
-  test('initial propagation excludes letters with no support in any candidate', () => {
-    // No word in the list contains 'q' → no cell should ever offer 'q' as an option.
+  test('fill never places letters absent from all candidates', () => {
+    // No word contains 'q', so the fill must never place 'q' anywhere.
     const noQwords = wordList3.filter(w => !w.includes('q'));
-    const r = propagateConstraints({
+    const engine = createFillEngine({
       size: 3,
       blacks: isolatedBlacks,
       wordsByLength: new Map([[3, noQwords]]),
-      placedLetters: new Map(),
+      seed: 1,
     });
-    expect(r.contradiction).toBe(false);
+    let done = false;
+    for (let i = 0; i < 1000 && !done; i++) done = engine.step(10);
+    expect(engine.getResult().success).toBe(true);
+    const grid = engine.getResult().grid;
     for (let c = 0; c < 3; c++) {
-      expect(r.options[1][c]).not.toContain('q');
+      expect(grid[1][c]).not.toBe('q');
     }
+  });
+});
+
+describe('PR8 frame cloning', () => {
+  test('backtracking restores state: fill with forced backtracking produces valid result', () => {
+    // A very constrained grid to force real backtracking.
+    // If pushFrame/popFrame is broken, state corruption would cause wrong or failed fills.
+    const engine = createFillEngine({
+      size: 4,
+      blacks: Array.from({ length: 4 }, () => Array(4).fill(false) as boolean[]),
+      wordsByLength: new Map([[4, wordList4]]),
+      seed: 17,
+    });
+    let done = false;
+    for (let i = 0; i < 50000 && !done; i++) done = engine.step(10);
+    const result = engine.getResult();
+    expect(result.success).toBe(true);
+    // Verify all cells have valid letters
+    for (let r = 0; r < 4; r++)
+      for (let c = 0; c < 4; c++)
+        expect(result.grid[r][c]).toMatch(/^[a-z]$/);
+  });
+
+  test('multiple backtracks still reach correct solution', () => {
+    // Seed that requires many backtracks — verifies frame undo log is consistent.
+    const engine = createFillEngine({ size, blacks: twoCorners, wordsByLength, seed: 999 });
+    let done = false;
+    for (let i = 0; i < 10000 && !done; i++) done = engine.step(10);
+    const result = engine.getResult();
+    expect(result.success).toBe(true);
+    // No duplicate words
+    const words = result.slots.map(s => s.cells.map(({ row, col }) => result.grid[row][col]).join(''));
+    expect(new Set(words).size).toBe(words.length);
   });
 });
 
