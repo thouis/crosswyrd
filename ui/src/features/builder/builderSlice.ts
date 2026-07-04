@@ -45,6 +45,12 @@ interface BuilderState {
   welcomeDialogState: WelcomeDialogStateType;
   tileUpdates: TileUpdateType[];
   publishInfo: PublishInfoType;
+  lockedSlots: string[];
+  bannedWords: string[];
+}
+
+export function slotKey(row: number, col: number, direction: 'across' | 'down'): string {
+  return `${row},${col},${direction}`;
 }
 
 export const DEFAULT_PUZZLE_SIZE = 15;
@@ -72,6 +78,8 @@ const initialState: BuilderState = {
   welcomeDialogState: { open: true, showCheckbox: true },
   tileUpdates: [],
   publishInfo: { title: '', author: '', id: null },
+  lockedSlots: [],
+  bannedWords: [],
 };
 
 export function getSymmetricTile(
@@ -223,6 +231,22 @@ export const builderSlice = createSlice({
     setPublishInfo: (state, action: PayloadAction<PublishInfoType>) => {
       state.publishInfo = action.payload;
     },
+    toggleLockedSlot: (state, action: PayloadAction<string>) => {
+      const key = action.payload;
+      const idx = state.lockedSlots.indexOf(key);
+      if (idx === -1) state.lockedSlots.push(key);
+      else state.lockedSlots.splice(idx, 1);
+    },
+    addBannedWord: (state, action: PayloadAction<string>) => {
+      const word = action.payload.toLowerCase();
+      if (!state.bannedWords.includes(word)) state.bannedWords.push(word);
+    },
+    removeBannedWord: (state, action: PayloadAction<string>) => {
+      const word = action.payload.toLowerCase();
+      state.bannedWords = state.bannedWords.filter((w) => w !== word);
+    },
+    clearLockedSlots: (state) => { state.lockedSlots = []; },
+    clearBannedWords: (state) => { state.bannedWords = []; },
   },
 });
 
@@ -245,6 +269,11 @@ export const {
   setDefaultGridDialogOpen,
   setWelcomeDialogState,
   setPublishInfo,
+  toggleLockedSlot,
+  clearLockedSlots,
+  addBannedWord,
+  removeBannedWord,
+  clearBannedWords,
 } = builderSlice.actions;
 
 export const selectPuzzle = (state: RootState) => state.builder.puzzle;
@@ -266,5 +295,9 @@ export const selectTileUpdates = (state: RootState) =>
   state.builder.tileUpdates;
 export const selectPublishInfo = (state: RootState) =>
   state.builder.publishInfo;
+export const selectLockedSlots = (state: RootState) =>
+  state.builder.lockedSlots;
+export const selectBannedWords = (state: RootState) =>
+  state.builder.bannedWords;
 
 export default builderSlice.reducer;

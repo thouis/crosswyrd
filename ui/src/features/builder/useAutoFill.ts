@@ -1,14 +1,16 @@
-import { proxy, Remote } from 'comlink';
-import _ from 'lodash';
+import { Remote, proxy } from 'comlink';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useDispatch } from 'react-redux';
+import { useDispatch, useSelector } from 'react-redux';
 
 import { randomId } from '../../app/util';
 import {
   CrosswordPuzzleType,
   LetterType,
+  selectBannedWords,
+  selectLockedSlots,
   setPuzzleState,
   setWaveState,
+  slotKey,
 } from './builderSlice';
 import { withPuzzleTileUpdates } from './useTileInput';
 import { WaveAndPuzzleType } from './useWaveAndPuzzleHistory';
@@ -30,7 +32,7 @@ export default function useAutoFill(
   puzzle: CrosswordPuzzleType,
   autoFillRunning: boolean,
   setAutoFillRunning: (running: boolean) => void,
-  pushStateHistory: (waveAndPuzzle: WaveAndPuzzleType) => void,
+  pushStateHistory: (wap: WaveAndPuzzleType) => void,
   WFCWorkerRef: React.MutableRefObject<Remote<WFCWorkerAPIType> | null>,
   updateWaveWithTileUpdates: (
     dictionary: DictionaryType,
@@ -43,110 +45,193 @@ export default function useAutoFill(
     error: string;
     puzzleVersion: string;
   } | null>(null);
+
   const fillIdRef = useRef(0);
+  const puzzleRef = useRef(puzzle);
+  useEffect(() => { puzzleRef.current = puzzle; }, [puzzle]);
+
   const dispatch = useDispatch();
+  const lockedSlots = useSelector(selectLockedSlots);
+  const bannedWords = useSelector(selectBannedWords);
+  const lockedSlotsRef = useRef(lockedSlots);
+  const bannedWordsRef = useRef(bannedWords);
+  useEffect(() => { lockedSlotsRef.current = lockedSlots; }, [lockedSlots]);
+  useEffect(() => { bannedWordsRef.current = bannedWords; }, [bannedWords]);
 
   useEffect(() => {
     if (
       autoFillErrorState &&
       (autoFillRunning || puzzle.version !== autoFillErrorState.puzzleVersion)
-    ) {
+    )
       setAutoFillErrorState(null);
-    }
   }, [autoFillErrorState, autoFillRunning, puzzle.version]);
 
   const runAutoFill = useCallback(() => {
-    if (!WFCWorkerRef.current) return;
     if (autoFillRunning) return;
+    if (!WFCWorkerRef.current) return;
+
     fillIdRef.current += 1;
-    const thisFillId = fillIdRef.current;
+    const currentFillId = fillIdRef.current;
     setAutoFillRunning(true);
 
-    const size = puzzle.tiles.length;
-    const blacks: boolean[][] = [];
-    const placedLetters: Array<{ row: number; col: number; letter: string }> = [];
-    for (let r = 0; r < size; r++) {
-      const row: boolean[] = [];
-      for (let c = 0; c < size; c++) {
-        const t = puzzle.tiles[r][c];
-        row.push(t.value === 'black');
-        if (t.value !== 'black' && t.value !== 'empty') {
-          placedLetters.push({ row: r, col: c, letter: t.value as string });
-        }
-      }
-      blacks.push(row);
-    }
+    const startPuzzle = puzzleRef.current;
+    const size = startPuzzle.tiles.length;
+    const blacks: boolean[][] = startPuzzle.tiles.map((row) =>
+      row.map((tile) => tile.value === 'black')
+    );
 
     const seed = Math.floor(Math.random() * 0x7fffffff);
-    const puzzleAtStart = puzzle;
+
+    const solid = (r: number, c: number) =>
+      !startPuzzle.tiles[r]?.[c] || startPuzzle.tiles[r][c].value === 'black';
+
+    interface SlotInfo {
+      key: string;
+      cells: Array<{ row: number; col: number }>;
+      word: string;
+    }
+    const allSlots: SlotInfo[] = [];
+    for (let r = 0; r < size; r++) {
+      for (let c = 0; c < size; c++) {
+        if (solid(r, c)) continue;
+        if (solid(r, c - 1)) {
+          const cells: Array<{ row: number; col: number }> = [];
+          for (let cc = c; cc < size && !solid(r, cc); cc++) cells.push({ row: r, col: cc });
+          if (cells.length >= 2) {
+            const hasEmpty = cells.some(({ row, col }) => startPuzzle.tiles[row][col].value === 'empty');
+            const word = hasEmpty ? '' : cells.map(({ row, col }) => startPuzzle.tiles[row][col].value as string).join('');
+            allSlots.push({ key: slotKey(r, c, 'across'), cells, word });
+          }
+        }
+        if (solid(r - 1, c)) {
+          const cells: Array<{ row: number; col: number }> = [];
+          for (let rr = r; rr < size && !solid(rr, c); rr++) cells.push({ row: rr, col: c });
+          if (cells.length >= 2) {
+            const hasEmpty = cells.some(({ row, col }) => startPuzzle.tiles[row][col].value === 'empty');
+            const word = hasEmpty ? '' : cells.map(({ row, col }) => startPuzzle.tiles[row][col].value as string).join('');
+            allSlots.push({ key: slotKey(r, c, 'down'), cells, word });
+          }
+        }
+      }
+    }
+
+    const currentLockedSlots = lockedSlotsRef.current;
+    const currentBannedWords = bannedWordsRef.current;
+    const lockedSlotsSet = new Set(currentLockedSlots);
+    const bannedWordsSet = new Set(currentBannedWords);
+
+    const bannedSlots = allSlots.filter((s) => s.word && bannedWordsSet.has(s.word));
+    const hasLocked = currentLockedSlots.length > 0;
+    const hasBanned = bannedSlots.length > 0;
 
     const onProgress = (update: FillWaveUpdate) => {
-      // Stale check
-      if (thisFillId !== fillIdRef.current) return;
+      if (currentFillId !== fillIdRef.current) return;
+      const curPuzzle = puzzleRef.current;
 
       if (!update.done) {
         dispatch(setWaveState(update.wave));
         return;
       }
+
+      setAutoFillRunning(false);
       if (update.success) {
-        const grid = update.grid;
         const tileUpdates: TileUpdateType[] = [];
-        for (let r = 0; r < grid.length; r++) {
-          for (let c = 0; c < grid[r].length; c++) {
-            const cur = puzzleAtStart.tiles[r][c].value;
-            const gv = grid[r][c];
-            if (gv === '.' || gv === ' ') continue;
-            if (cur !== gv) {
-              tileUpdates.push({ row: r, column: c, value: gv as LetterType });
+        const sz = curPuzzle.tiles.length;
+        for (let r = 0; r < sz; r++) {
+          for (let c = 0; c < sz; c++) {
+            const letter = update.grid[r][c];
+            if (letter && letter !== '.' && curPuzzle.tiles[r][c].value !== letter) {
+              tileUpdates.push({ row: r, column: c, value: letter as LetterType });
             }
           }
         }
-        const newVersion = randomId();
-        updateWaveWithTileUpdates(
-          null as unknown as DictionaryType,
-          tileUpdates,
-          newVersion
-        ).then((newWave) => {
-          if (thisFillId !== fillIdRef.current) return;
-          if (newWave) {
-            const newPuzzle = withPuzzleTileUpdates(
-              puzzleAtStart,
-              tileUpdates,
-              newVersion
-            );
-            pushStateHistory({ wave: newWave, puzzle: newPuzzle });
-            dispatch(setPuzzleState(newPuzzle));
-          }
-          setAutoFillRunning(false);
-        });
+        if (tileUpdates.length > 0) {
+          const newVersion = randomId();
+          updateWaveWithTileUpdates(null as unknown as DictionaryType, tileUpdates, newVersion).then((newWave) => {
+            if (newWave) {
+              const newPuzzle = withPuzzleTileUpdates(curPuzzle, tileUpdates, newVersion);
+              pushStateHistory({ wave: newWave, puzzle: newPuzzle });
+              dispatch(setPuzzleState(newPuzzle));
+            }
+          });
+        }
       } else {
         const reason = update.failureReason;
         const error =
-          reason === 'timeout'
-            ? 'Auto-Fill timed out before finding a solution. Try undoing recent changes or erasing placed words.'
-            : reason === 'maxSteps'
-            ? 'Auto-Fill reached the maximum step limit. Try undoing recent changes or erasing placed words.'
-            : 'Auto-Fill cannot fill the puzzle from here! Try undoing recent changes or erasing words you have already placed.';
-        setAutoFillRunning(false);
-        setAutoFillErrorState({ error, puzzleVersion: puzzle.version });
+          reason === 'timeout' ? 'Auto-Fill timed out before completing the puzzle.' :
+          reason === 'maxSteps' ? 'Auto-Fill reached the step limit without completing the puzzle.' :
+          reason === 'contradiction' ? 'Auto-Fill found a contradiction — the placed letters may be incompatible.' :
+          'Auto-Fill could not find a valid fill for this puzzle.';
+        setAutoFillErrorState({ error, puzzleVersion: curPuzzle.version });
       }
     };
 
-    WFCWorkerRef.current
-      .startFill(blacks, placedLetters, wordBankWords, seed, proxy(onProgress))
-      .catch(() => {
-        if (thisFillId !== fillIdRef.current) return;
-        setAutoFillRunning(false);
-      });
+    if (hasLocked || hasBanned) {
+      const solvedGrid: string[][] = startPuzzle.tiles.map((row) =>
+        row.map((tile) => (tile.value === 'black' || tile.value === 'empty' ? '' : tile.value))
+      );
+
+      const lockedSlotCells: Array<Array<{ row: number; col: number }>> = allSlots
+        .filter((s) => lockedSlotsSet.has(s.key))
+        .map((s) => s.cells);
+
+      const removedSlotCells: Array<Array<{ row: number; col: number }>> = bannedSlots.map((s) => s.cells);
+
+      const effectiveRemoved = removedSlotCells.length > 0
+        ? removedSlotCells
+        : allSlots.filter((s) => !lockedSlotsSet.has(s.key) && !s.word).map((s) => s.cells);
+
+      if (effectiveRemoved.length === 0) {
+        const placedLetters: Array<{ row: number; col: number; letter: string }> = [];
+        for (let r = 0; r < size; r++) {
+          for (let c = 0; c < size; c++) {
+            const v = startPuzzle.tiles[r][c].value;
+            if (v !== 'black' && v !== 'empty') placedLetters.push({ row: r, col: c, letter: v });
+          }
+        }
+        WFCWorkerRef.current!
+          .startFill(blacks, placedLetters, wordBankWords, seed, proxy(onProgress))
+          .catch(() => { if (currentFillId === fillIdRef.current) setAutoFillRunning(false); });
+        return;
+      }
+
+      WFCWorkerRef.current!
+        .startRevision(
+          blacks,
+          solvedGrid,
+          effectiveRemoved,
+          lockedSlotCells,
+          currentBannedWords,
+          wordBankWords,
+          seed,
+          proxy(onProgress)
+        )
+        .catch(() => { if (currentFillId === fillIdRef.current) setAutoFillRunning(false); });
+    } else {
+      const placedLetters: Array<{ row: number; col: number; letter: string }> = [];
+      for (let r = 0; r < size; r++) {
+        for (let c = 0; c < size; c++) {
+          const v = startPuzzle.tiles[r][c].value;
+          if (v !== 'black' && v !== 'empty') {
+            placedLetters.push({ row: r, col: c, letter: v });
+          }
+        }
+      }
+
+      WFCWorkerRef.current
+        .startFill(blacks, placedLetters, wordBankWords, seed, proxy(onProgress))
+        .catch(() => {
+          if (currentFillId === fillIdRef.current) setAutoFillRunning(false);
+        });
+    }
   }, [
-    WFCWorkerRef,
     autoFillRunning,
-    puzzle,
-    wordBankWords,
-    updateWaveWithTileUpdates,
-    pushStateHistory,
-    dispatch,
     setAutoFillRunning,
+    WFCWorkerRef,
+    wordBankWords,
+    dispatch,
+    pushStateHistory,
+    updateWaveWithTileUpdates,
   ]);
 
   const stopAutoFill = useCallback(() => {
@@ -155,10 +240,9 @@ export default function useAutoFill(
     setAutoFillRunning(false);
   }, [WFCWorkerRef, setAutoFillRunning]);
 
-  const autoFillError = useMemo(
-    () => autoFillErrorState?.error || null,
-    [autoFillErrorState]
-  );
+  const autoFillError = useMemo(() => autoFillErrorState?.error || null, [
+    autoFillErrorState,
+  ]);
 
   return { runAutoFill, stopAutoFill, autoFillError };
 }

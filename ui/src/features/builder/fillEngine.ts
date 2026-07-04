@@ -705,6 +705,43 @@ export class FillEngineInstance {
     return ok;
   }
 
+  deduplicateAfterPinning(): boolean {
+    const size = this.size;
+    const usedWords = new Set<string>();
+
+    for (const slot of this.slots) {
+      let determined = true;
+      const chars: string[] = [];
+      for (const { row, col } of slot.cells) {
+        const mask: LetterMask = { lo: this.cellMasksLo[row * size + col], hi: this.cellMasksHi[row * size + col] };
+        if (this.alphabet.isEmpty(mask) || !this.alphabet.isSingleLetter(mask)) { determined = false; break; }
+        chars.push(this.alphabet.getSingleLetter(mask));
+      }
+      if (determined) usedWords.add(chars.join(''));
+    }
+
+    for (const word of Array.from(usedWords)) {
+      const len = word.length;
+      const sameLen = this.slotsByLength.get(len) ?? [];
+      for (const si of sameLen) {
+        const slot = this.slots[si];
+        let determined = true;
+        for (const { row, col } of slot.cells) {
+          const mask: LetterMask = { lo: this.cellMasksLo[row * size + col], hi: this.cellMasksHi[row * size + col] };
+          if (this.alphabet.isEmpty(mask) || !this.alphabet.isSingleLetter(mask)) { determined = false; break; }
+        }
+        if (determined) continue;
+        if (!this.removeWordFromSlot(word, si)) return false;
+      }
+      if (!this.propagate()) {
+        this.finished = true;
+        this.succeeded = false;
+        return false;
+      }
+    }
+    return true;
+  }
+
   getOptions(): string[][][] {
     const size = this.size;
     const alpha = this.alphabet;
@@ -803,4 +840,266 @@ export function propagateConstraints(config: PropagateConfig): PropagateResult {
   });
   const ok = engine.setPlacedLetters(config.placedLetters);
   return { options: engine.getOptions(), contradiction: !ok };
+}
+
+// ---------------------------------------------------------------------------
+// Clue numbering and slot lookup
+// ---------------------------------------------------------------------------
+
+export interface ClueSlot {
+  cells: Array<{ row: number; col: number }>;
+  direction: 'across' | 'down';
+  word?: string;
+}
+
+export function buildClueMap(
+  size: number,
+  blacks: boolean[][],
+  solvedGrid?: string[][]
+): Map<string, ClueSlot> {
+  const isBlack = (r: number, c: number) =>
+    r < 0 || r >= size || c < 0 || c >= size || blacks[r][c];
+
+  const result = new Map<string, ClueSlot>();
+  let num = 0;
+
+  for (let r = 0; r < size; r++) {
+    for (let c = 0; c < size; c++) {
+      if (isBlack(r, c)) continue;
+      const startsAcross = isBlack(r, c - 1) && !isBlack(r, c + 1);
+      const startsDown = isBlack(r - 1, c) && !isBlack(r + 1, c);
+      if (!startsAcross && !startsDown) continue;
+      num++;
+
+      if (startsAcross) {
+        const cells: Array<{ row: number; col: number }> = [];
+        let cc = c;
+        while (!isBlack(r, cc)) cells.push({ row: r, col: cc++ });
+        const word = solvedGrid
+          ? cells.map(({ row, col }) => solvedGrid[row][col]).join('')
+          : undefined;
+        result.set(`${num}A`, { cells, direction: 'across', word });
+      }
+      if (startsDown) {
+        const cells: Array<{ row: number; col: number }> = [];
+        let rr = r;
+        while (!isBlack(rr, c)) cells.push({ row: rr++, col: c });
+        const word = solvedGrid
+          ? cells.map(({ row, col }) => solvedGrid[row][col]).join('')
+          : undefined;
+        result.set(`${num}D`, { cells, direction: 'down', word });
+      }
+    }
+  }
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Solve validation
+// ---------------------------------------------------------------------------
+
+export interface ValidationResult {
+  valid: boolean;
+  errors: string[];
+}
+
+export function validateSolvedGrid(
+  solvedGrid: string[][],
+  blacks: boolean[][],
+  wordsByLength: Map<number, string[]>,
+  bankWords?: Set<string>,
+  allowEmpty?: boolean,
+  alphabet?: Alphabet
+): ValidationResult {
+  const size = solvedGrid.length;
+  const errors: string[] = [];
+  const validCharSet = alphabet ? new Set(alphabet.letters) : null;
+  const isValidChar = (ch: string) => validCharSet ? validCharSet.has(ch) : (ch >= 'a' && ch <= 'z');
+  const isValidWord = (w: string) => w.length > 0 && Array.from(w).every(isValidChar);
+
+  for (let r = 0; r < size; r++) {
+    for (let c = 0; c < size; c++) {
+      if (!blacks[r][c] && !(allowEmpty && solvedGrid[r][c] === '') && !isValidChar(solvedGrid[r][c])) {
+        errors.push(`Cell (${r},${c}) is not a letter: "${solvedGrid[r][c]}"`);
+      }
+    }
+  }
+
+  const clueMap = buildClueMap(size, blacks, solvedGrid);
+  const usedWords = new Map<string, string>();
+
+  clueMap.forEach((slot, label) => {
+    const word = slot.word ?? '';
+    if (!isValidWord(word)) {
+      if (allowEmpty) return;
+      errors.push(`${label}: invalid word "${word}"`);
+      return;
+    }
+    const inDict = (wordsByLength.get(word.length) ?? []).includes(word);
+    const inBank = bankWords?.has(word) ?? false;
+    if (!inDict && !inBank) {
+      errors.push(`${label}: "${word}" not in dictionary or bank`);
+    }
+    if (usedWords.has(word)) {
+      errors.push(`${label}: "${word}" duplicates ${usedWords.get(word)}`);
+    } else {
+      usedWords.set(word, label);
+    }
+  });
+
+  return { valid: errors.length === 0, errors };
+}
+
+// ---------------------------------------------------------------------------
+// Revision fill — replace one or more slots in a completed grid
+// ---------------------------------------------------------------------------
+
+export interface RevisionFillConfig {
+  solvedGrid: string[][];
+  blacks: boolean[][];
+  wordsByLength: Map<number, string[]>;
+  bannedWords: string[];
+  removedSlotCells: Array<Array<{ row: number; col: number }>>;
+  lockedSlotCells?: Array<Array<{ row: number; col: number }>>;
+  bankWords?: string[];
+  seed?: number;
+  timeoutMs?: number;
+  alphabet?: Alphabet;
+}
+
+function revisionBuildPinnedCells(
+  solvedGrid: string[][],
+  slots: SlotTopology['slots'],
+  freeSet: Set<number>
+): Map<string, string> {
+  const pinned = new Map<string, string>();
+  for (const slot of slots) {
+    if (freeSet.has(slot.id)) continue;
+    for (const { row, col } of slot.cells) {
+      pinned.set(`${row},${col}`, solvedGrid[row][col]);
+    }
+  }
+  return pinned;
+}
+
+function revisionCompatibleWordCount(
+  slot: SlotTopology['slots'][number],
+  pinnedCells: Map<string, string>,
+  wordsByLength: Map<number, string[]>
+): number {
+  const words = wordsByLength.get(slot.len) ?? [];
+  return words.filter(w =>
+    slot.cells.every(({ row, col }, i) => {
+      const pin = pinnedCells.get(`${row},${col}`);
+      return pin === undefined || w[i] === pin;
+    })
+  ).length;
+}
+
+function revisionFindSlotId(
+  slots: SlotTopology['slots'],
+  cells: Array<{ row: number; col: number }>
+): number {
+  const key = (c: { row: number; col: number }) => `${c.row},${c.col}`;
+  const targetKeys = new Set(cells.map(key));
+  for (const slot of slots) {
+    if (slot.cells.length === cells.length && slot.cells.every(c => targetKeys.has(key(c)))) return slot.id;
+  }
+  const first = cells[0];
+  for (const slot of slots) {
+    if (slot.cells.length === cells.length && slot.cells[0].row === first.row && slot.cells[0].col === first.col) return slot.id;
+  }
+  return -1;
+}
+
+function revisionTryFill(
+  freeSet: Set<number>,
+  filteredWords: Map<number, string[]>,
+  slots: SlotTopology['slots'],
+  solvedGrid: string[][],
+  blacks: boolean[][],
+  bankWords: string[],
+  seed: number,
+  timeoutMs: number,
+  alphabet: Alphabet
+): FillResult | null {
+  const size = blacks.length;
+  const pinnedCells = revisionBuildPinnedCells(solvedGrid, slots, freeSet);
+  const engine = createFillEngine({ size, blacks, wordsByLength: filteredWords, bankWords, seed, timeoutMs, alphabet });
+  if (pinnedCells.size > 0 && !engine.setPlacedLetters(pinnedCells)) return null;
+  if (!engine.deduplicateAfterPinning()) return null;
+  while (!engine.step(10000)) { /* loop */ }
+  const result = engine.getResult();
+  return result.success ? result : null;
+}
+
+export function runRevisionFill(config: RevisionFillConfig): FillResult | null {
+  const {
+    solvedGrid, blacks, bannedWords,
+    removedSlotCells, lockedSlotCells = [],
+    bankWords = [], seed = 0, timeoutMs = 30000,
+    alphabet = ENGLISH,
+  } = config;
+
+  const bannedSet = new Set(bannedWords);
+  const filteredWords = new Map<number, string[]>();
+  config.wordsByLength.forEach((words, len) => {
+    filteredWords.set(len, words.filter(w => !bannedSet.has(w)));
+  });
+
+  const { slots } = buildSlotTopology(blacks.length, blacks);
+
+  const crossingMap = new Map<number, Set<number>>();
+  for (const slot of slots) {
+    const s = new Set<number>();
+    for (const c of slot.crossings) { if (c) s.add(c.slotId); }
+    crossingMap.set(slot.id, s);
+  }
+
+  const removedIds = removedSlotCells
+    .map(cells => revisionFindSlotId(slots, cells))
+    .filter(id => id !== -1);
+  if (removedIds.length === 0) return null;
+
+  const lockedIds = new Set(
+    lockedSlotCells
+      .map(cells => revisionFindSlotId(slots, cells))
+      .filter(id => id !== -1)
+  );
+
+  const freeSet = new Set(removedIds);
+  const visited = new Set(removedIds);
+  let frontier = new Set(removedIds);
+
+  while (true) {
+    const result = revisionTryFill(freeSet, filteredWords, slots, solvedGrid, blacks, bankWords, seed, timeoutMs, alphabet);
+    if (result) return result;
+
+    const ring: number[] = [];
+    frontier.forEach(slotId => {
+      (crossingMap.get(slotId) ?? new Set()).forEach(crossId => {
+        if (!visited.has(crossId) && !lockedIds.has(crossId)) {
+          ring.push(crossId);
+          visited.add(crossId);
+        }
+      });
+    });
+
+    if (ring.length === 0) return null;
+
+    const pinnedForSort = revisionBuildPinnedCells(solvedGrid, slots, freeSet);
+    ring.sort((a, b) =>
+      revisionCompatibleWordCount(slots[a], pinnedForSort, filteredWords) -
+      revisionCompatibleWordCount(slots[b], pinnedForSort, filteredWords)
+    );
+
+    frontier = new Set<number>();
+    for (const slotId of ring) {
+      freeSet.add(slotId);
+      frontier.add(slotId);
+      const r = revisionTryFill(freeSet, filteredWords, slots, solvedGrid, blacks, bankWords, seed, timeoutMs, alphabet);
+      if (r) return r;
+    }
+  }
 }
