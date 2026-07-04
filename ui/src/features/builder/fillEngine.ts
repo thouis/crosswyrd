@@ -1047,6 +1047,7 @@ export function runRevisionFill(config: RevisionFillConfig): FillResult | null {
   config.wordsByLength.forEach((words, len) => {
     filteredWords.set(len, words.filter(w => !bannedSet.has(w)));
   });
+  const filteredBankWords = bankWords.filter(w => !bannedSet.has(w));
 
   const { slots } = buildSlotTopology(blacks.length, blacks);
 
@@ -1073,7 +1074,7 @@ export function runRevisionFill(config: RevisionFillConfig): FillResult | null {
   let frontier = new Set(removedIds);
 
   while (true) {
-    const result = revisionTryFill(freeSet, filteredWords, slots, solvedGrid, blacks, bankWords, seed, timeoutMs, alphabet);
+    const result = revisionTryFill(freeSet, filteredWords, slots, solvedGrid, blacks, filteredBankWords, seed, timeoutMs, alphabet);
     if (result) return result;
 
     const ring: number[] = [];
