@@ -1,5 +1,15 @@
 import _ from 'lodash';
-import { Alert, Slide, Snackbar } from '@mui/material';
+import {
+  Alert,
+  Button,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogContentText,
+  DialogTitle,
+  Slide,
+  Snackbar,
+} from '@mui/material';
 import React, {
   useCallback,
   useEffect,
@@ -128,6 +138,12 @@ export default function CrosswordBuilder({ grid }: Props) {
     useState<WordLocationsGridType | null>(null);
   const [autoFillRunning, setAutoFillRunning] = useState(false);
   const [symmetricBlackTiles, setSymmetricBlackTiles] = useState(true);
+  const [unknownWordsDialog, setUnknownWordsDialog] = useState<string[] | null>(null);
+
+  const handleUnknownWords = useCallback((words: string[]) => {
+    setAutoFillRunning(false);
+    setUnknownWordsDialog(words);
+  }, [setAutoFillRunning]);
 
   const {
     onClick,
@@ -197,7 +213,8 @@ export default function CrosswordBuilder({ grid }: Props) {
     pushStateHistory,
     WFCWorkerRef,
     updateWaveWithTileUpdates,
-    wordBankWords
+    wordBankWords,
+    handleUnknownWords
   );
 
   // Update the wave with changes to the puzzle
@@ -503,6 +520,32 @@ export default function CrosswordBuilder({ grid }: Props) {
         <DraggedWord />
       </div>
       <AlertSnackbar open={showPuzzleError} error={puzzleError} />
+      <Dialog open={!!unknownWordsDialog} onClose={() => setUnknownWordsDialog(null)}>
+        <DialogTitle>Unknown Words in Puzzle</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            The following {unknownWordsDialog?.length === 1 ? 'word is' : 'words are'} in the
+            puzzle but not in the dictionary or Word Bank:{' '}
+            <strong>{unknownWordsDialog?.map(w => w.toUpperCase()).join(', ')}</strong>.
+            Add {unknownWordsDialog?.length === 1 ? 'it' : 'them'} to the Word Bank to allow
+            revision fill to proceed?
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setUnknownWordsDialog(null)}>No, cancel fill</Button>
+          <Button
+            variant="contained"
+            onClick={() => {
+              const words = unknownWordsDialog ?? [];
+              setWordBankWords(_.sortBy(Array.from(new Set(wordBankWords.concat(words)))));
+              setUnknownWordsDialog(null);
+              setTimeout(runAutoFill, 0);
+            }}
+          >
+            Add to Word Bank
+          </Button>
+        </DialogActions>
+      </Dialog>
     </div>
   );
 }

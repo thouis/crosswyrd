@@ -38,6 +38,7 @@ export interface TileUpdateType {
 export type FillWaveUpdate =
   | { done: false; wave: WaveType }
   | { done: true; success: false; failureReason: 'timeout' | 'maxSteps' | 'noValidFill' | 'contradiction' }
+  | { done: true; success: false; failureReason: 'unknownWords'; unknownWords: string[] }
   | { done: true; success: true; grid: string[][] };
 
 export function useWordBankSync(

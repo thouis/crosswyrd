@@ -39,7 +39,8 @@ export default function useAutoFill(
     tileUpdates: TileUpdateType[],
     newPuzzleVersion?: string
   ) => Promise<WaveType | null>,
-  wordBankWords: string[] = []
+  wordBankWords: string[] = [],
+  onUnknownWords?: (words: string[]) => void
 ): ReturnType {
   const [autoFillErrorState, setAutoFillErrorState] = useState<{
     error: string;
@@ -157,6 +158,10 @@ export default function useAutoFill(
         }
       } else {
         const reason = update.failureReason;
+        if (reason === 'unknownWords' && onUnknownWords) {
+          onUnknownWords((update as any).unknownWords ?? []);
+          return;
+        }
         const error =
           reason === 'timeout' ? 'Auto-Fill timed out before completing the puzzle.' :
           reason === 'maxSteps' ? 'Auto-Fill reached the step limit without completing the puzzle.' :

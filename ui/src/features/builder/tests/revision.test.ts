@@ -162,6 +162,33 @@ describe('validateSolvedGrid', () => {
     expect(result.valid).toBe(true);
   });
 
+  it('does not report gap-assembled crossing slots when allowEmpty=true', () => {
+    // Row 1 filled with a non-dictionary word; rows 0, 2, 3 empty.
+    // Down slots at cols 1-3 have one letter (from row 1) surrounded by empty cells.
+    // Their assembled "word" would be just 1 char (e.g. 'z') if empty strings are
+    // naively concatenated — shorter than the slot length. They must be skipped.
+    // Only the fully-filled 4-letter across at row 1 should be reported.
+    const partialGrid: string[][] = [
+      ['', '', '', ''],
+      ['', 'z', 'z', 'z'],  // 4-letter across: 'zzz' is partial (col 0 empty), 3-letter at (0,1) would need cols 1-3
+      ['', '', '', ''],
+      ['', '', '', ''],
+    ];
+    // Actually make row 1 fully filled for a clean non-dict 4-letter word:
+    const testGrid: string[][] = [
+      ['', '', '', ''],
+      ['z', 'z', 'z', 'z'],  // non-dict 4-letter word
+      ['', '', '', ''],
+      ['', '', '', ''],
+    ];
+    const result = validateSolvedGrid(testGrid, twoCorners, wordsByLength, undefined, true, ENGLISH);
+    // Only the 4-letter 'zzzz' at row 1 should be flagged; crossing down slots are partial and skipped
+    expect(result.valid).toBe(false);
+    const notDictErrors = result.errors.filter(e => e.includes('not in dictionary'));
+    expect(notDictErrors).toHaveLength(1);
+    expect(notDictErrors[0]).toContain('zzzz');
+  });
+
   it('accepts a word present in bankWords even if not in dictionary', () => {
     const grid = getFilledGrid(42)!;
     expect(grid).not.toBeNull();

@@ -91,10 +91,10 @@ function BuilderTabs({
           onChange={handleChange}
           aria-label="basic tabs example"
         >
-          <Tab label="Fill" {...a11yProps(0)} />
-          <Tab label="Word Bank" {...a11yProps(1)} />
-          <Tab label="Clues" {...a11yProps(2)} />
-          <Tab label="Ban List" {...a11yProps(3)} />
+          <Tab label="Fill" {...a11yProps(0)} sx={{ minWidth: 0, px: 1.5, justifyContent: 'flex-end' }} />
+          <Tab label={<span style={{ lineHeight: 1.2 }}>Word<br />Bank</span>} {...a11yProps(1)} sx={{ minWidth: 0, px: 1.5, justifyContent: 'flex-end' }} />
+          <Tab label="Clues" {...a11yProps(2)} sx={{ minWidth: 0, px: 1.5, justifyContent: 'flex-end' }} />
+          <Tab label="Banned" {...a11yProps(3)} sx={{ minWidth: 0, px: 1.5, justifyContent: 'flex-end' }} />
         </Tabs>
       </Box>
       <TabPanel value={currentTab} index={0}>

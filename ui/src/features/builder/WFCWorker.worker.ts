@@ -402,8 +402,17 @@ const WFCWorkerAPI: WFCWorkerAPIType = {
       bankSet, true, workerAlphabet
     );
     if (!validation.valid) {
-      console.error('startRevision: invalid solve, aborting:', validation.errors);
-      try { onProgress({ done: true, success: false, failureReason: 'contradiction' }); } catch (_e) {}
+      // Extract unknown-word errors so the UI can prompt the user to add them to the bank.
+      const unknownWords: string[] = [];
+      for (const err of validation.errors) {
+        const m = err.match(/"([^"]+)" not in dictionary or bank/);
+        if (m) unknownWords.push(m[1]);
+      }
+      if (unknownWords.length > 0) {
+        try { onProgress({ done: true, success: false, failureReason: 'unknownWords', unknownWords }); } catch (_e) {}
+      } else {
+        try { onProgress({ done: true, success: false, failureReason: 'contradiction' }); } catch (_e) {}
+      }
       return;
     }
 

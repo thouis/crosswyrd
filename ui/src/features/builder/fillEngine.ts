@@ -931,7 +931,7 @@ export function validateSolvedGrid(
 
   clueMap.forEach((slot, label) => {
     const word = slot.word ?? '';
-    if (!isValidWord(word)) {
+    if (!isValidWord(word) || (allowEmpty && word.length < slot.cells.length)) {
       if (allowEmpty) return;
       errors.push(`${label}: invalid word "${word}"`);
       return;
@@ -1047,9 +1047,19 @@ export function runRevisionFill(config: RevisionFillConfig): FillResult | null {
   config.wordsByLength.forEach((words, len) => {
     filteredWords.set(len, words.filter(w => !bannedSet.has(w)));
   });
-  const filteredBankWords = bankWords.filter(w => !bannedSet.has(w));
 
   const { slots } = buildSlotTopology(blacks.length, blacks);
+
+  // Collect all words currently in the solved grid so non-dictionary proper nouns
+  // in non-free slots don't cause a propagation contradiction when their cells get pinned.
+  const gridWords = new Set<string>();
+  for (const slot of slots) {
+    const word = slot.cells.map(({ row, col }) => solvedGrid[row][col]).join('');
+    if (word.length === slot.cells.length && !word.includes('')) gridWords.add(word);
+  }
+  const filteredBankWords = Array.from(
+    new Set(Array.from(gridWords).concat(bankWords).filter(w => !bannedSet.has(w)))
+  );
 
   const crossingMap = new Map<number, Set<number>>();
   for (const slot of slots) {

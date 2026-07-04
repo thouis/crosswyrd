@@ -12,9 +12,11 @@ import {
   ListItemButton,
   ListItemText,
 } from '@mui/material';
+import BlockIcon from '@mui/icons-material/Block';
 import CreateIcon from '@mui/icons-material/Create';
 import DeleteIcon from '@mui/icons-material/Delete';
 import DoneIcon from '@mui/icons-material/Done';
+import LockIcon from '@mui/icons-material/Lock';
 import React, { useEffect, useMemo, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 
@@ -22,11 +24,37 @@ import {
   CrosswordPuzzleType,
   setDraggedWord,
   selectDraggedWord,
+  selectLockedSlots,
+  selectBannedWords,
   TileType,
 } from './builderSlice';
 import { ALL_LETTERS } from './constants';
 import { LocationType } from './CrosswordBuilder';
 import { ElementType, WaveType } from './useWaveFunctionCollapse';
+
+function getSlotWord(puzzle: CrosswordPuzzleType, key: string): string {
+  const parts = key.split(',');
+  const r = parseInt(parts[0]);
+  const c = parseInt(parts[1]);
+  const direction = parts[2];
+  const tiles = puzzle.tiles;
+  const size = tiles.length;
+  const letters: string[] = [];
+  if (direction === 'across') {
+    for (let cc = c; cc < size && tiles[r]?.[cc]?.value !== 'black'; cc++) {
+      const v = tiles[r][cc].value;
+      if (v === 'empty') return '';
+      letters.push(v);
+    }
+  } else {
+    for (let rr = r; rr < size && tiles[rr]?.[c]?.value !== 'black'; rr++) {
+      const v = tiles[rr][c].value;
+      if (v === 'empty') return '';
+      letters.push(v);
+    }
+  }
+  return letters.join('');
+}
 
 export function getAllElementSets(
   puzzle: CrosswordPuzzleType,
@@ -138,8 +166,21 @@ function WordBank({ wave, puzzle, setWordLocationsGrid, words, setWords }: Props
   const [currentWord, setCurrentWord] = useState('');
 
   const draggedWord = useSelector(selectDraggedWord);
+  const lockedSlots = useSelector(selectLockedSlots);
+  const bannedWords = useSelector(selectBannedWords);
 
   const dispatch = useDispatch();
+
+  const lockedWordsSet = useMemo(() => {
+    const s = new Set<string>();
+    for (const key of lockedSlots) {
+      const word = getSlotWord(puzzle, key);
+      if (word) s.add(word);
+    }
+    return s;
+  }, [puzzle, lockedSlots]);
+
+  const bannedWordsSet = useMemo(() => new Set(bannedWords), [bannedWords]);
 
   // Cancel word locations grid when dragging stops
   useEffect(() => {
@@ -249,6 +290,11 @@ function WordBank({ wave, puzzle, setWordLocationsGrid, words, setWords }: Props
                     divider
                   >
                     <ListItemText primary={_.toUpper(entry.word)} />
+                    {bannedWordsSet.has(entry.word) ? (
+                      <BlockIcon fontSize="small" sx={{ color: 'error.main', mr: 1 }} />
+                    ) : lockedWordsSet.has(entry.word) ? (
+                      <LockIcon fontSize="small" sx={{ color: 'success.main', mr: 1 }} />
+                    ) : null}
                     <Chip
                       style={{ marginRight: 40 }}
                       color={
