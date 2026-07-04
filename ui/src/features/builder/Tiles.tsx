@@ -32,6 +32,8 @@ interface TileProps {
   tile: TileType;
   rowIndex: number;
   columnIndex: number;
+  isLocked?: boolean;
+  isBanned?: boolean;
 }
 
 function Tile({
@@ -48,6 +50,8 @@ function Tile({
   tile,
   rowIndex,
   columnIndex,
+  isLocked,
+  isBanned,
 }: TileProps) {
   const selectionIndex = _.findIndex(
     selectedTilesState?.locations || [],
@@ -133,6 +137,13 @@ function Tile({
                   : 'white',
             }
           : {}),
+        ...(tile.value !== 'black' && (isLocked || isBanned)
+          ? {
+              boxShadow: isLocked
+                ? 'inset 0 0 0 3px #4caf50'
+                : 'inset 0 0 0 3px #f44336',
+            }
+          : {}),
         cursor: wordLocationOptions || primarySelection ? 'pointer' : 'initial',
       }}
       onMouseOver={mkHandleMouseoverTile(rowIndex, columnIndex)}
@@ -198,6 +209,8 @@ interface Props {
   ) => (event) => void;
   mkHandleMouseoverTile: (row: number, column: number) => () => void;
   onMouseOut: () => void;
+  lockedCellKeys?: Set<string>;
+  bannedCellKeys?: Set<string>;
 }
 
 export default function Tiles({
@@ -211,6 +224,8 @@ export default function Tiles({
   mkHandleClickTile,
   mkHandleMouseoverTile,
   onMouseOut,
+  lockedCellKeys,
+  bannedCellKeys,
 }: Props) {
   const hoveredTiles: LocationType[] = useMemo(
     () =>
@@ -294,6 +309,8 @@ export default function Tiles({
                 tile={tile}
                 rowIndex={rowIndex}
                 columnIndex={columnIndex}
+                isLocked={lockedCellKeys?.has(`${rowIndex},${columnIndex}`)}
+                isBanned={bannedCellKeys?.has(`${rowIndex},${columnIndex}`)}
               />
             ))}
           </div>

@@ -132,4 +132,63 @@ describe('ban MORRO and refill', () => {
     console.log(`Words changed: ${changedCount} / ${originalWords.size}`);
     expect(changedCount).toBeLessThan(10);
   });
+
+  it('ban MORRO + lock RESPECT: <10 words change and RESPECT preserved across 5 seeds', () => {
+    const { slots } = buildSlotTopology(size, blacks);
+
+    // MORRO: across, row 0, cols 11-15
+    const morroSlot = slots.find(
+      s => s.direction === 'across' &&
+           s.cells.length === 5 &&
+           s.cells[0].row === 0 &&
+           s.cells[0].col === 11
+    );
+    expect(morroSlot).toBeDefined();
+
+    // RESPECT: down, row 0, col 14 (crosses MORRO)
+    const respectSlot = slots.find(s => {
+      const word = s.cells.map(({ row, col }) => solvedGrid[row][col]).join('');
+      return word === 'respect';
+    });
+    expect(respectSlot).toBeDefined();
+
+    const removedSlotCells = [morroSlot!.cells.map(({ row, col }) => ({ row, col }))];
+    const lockedSlotCells = [respectSlot!.cells.map(({ row, col }) => ({ row, col }))];
+    const originalWords = getSlotWords(solvedGrid, blacks);
+    const puzzleWords = extractPuzzleWords(solvedGrid, blacks).filter(w => w !== 'morro');
+    const respectKey = `${respectSlot!.id}`;
+
+    for (let seed = 1; seed <= 5; seed++) {
+      const result = runRevisionFill({
+        solvedGrid,
+        blacks,
+        wordsByLength,
+        bannedWords: ['morro'],
+        removedSlotCells,
+        lockedSlotCells,
+        bankWords: puzzleWords,
+        seed,
+        timeoutMs: 30000,
+      });
+
+      expect(result).not.toBeNull();
+      expect(result!.success).toBe(true);
+
+      const newGrid = result!.grid;
+      const newWords = getSlotWords(newGrid, blacks);
+
+      for (const [, word] of newWords) {
+        expect(word.toLowerCase()).not.toBe('morro');
+      }
+
+      expect(newWords.get(respectKey)).toBe('respect');
+
+      let changedCount = 0;
+      for (const [id, origWord] of originalWords) {
+        if (newWords.get(id) !== origWord) changedCount++;
+      }
+      console.log(`Seed ${seed}: Words changed: ${changedCount} / ${originalWords.size}`);
+      expect(changedCount).toBeLessThan(10);
+    }
+  });
 });

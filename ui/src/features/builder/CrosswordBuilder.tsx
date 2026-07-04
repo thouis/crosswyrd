@@ -17,12 +17,16 @@ import {
   selectDraggedWord,
   selectFillAssistActive,
   selectPuzzle,
+  selectLockedSlots,
+  selectBannedWords,
   clearLockedSlots,
   setDraggedWord,
   setPuzzleState,
   setPuzzleTileValues,
+  slotKey,
   TileValueType,
 } from './builderSlice';
+import { buildSlotTopology } from './fillEngine';
 import BannedWords from './BannedWords';
 import BuilderTabs from './BuilderTabs';
 import ClueEntry, { useClueData } from './ClueEntry';
@@ -97,6 +101,8 @@ export default function CrosswordBuilder({ grid }: Props) {
   const draggedWord = useSelector(selectDraggedWord);
   const currentTab = useSelector(selectCurrentTab);
   const fillAssistActive = useSelector(selectFillAssistActive);
+  const lockedSlots = useSelector(selectLockedSlots);
+  const bannedWords = useSelector(selectBannedWords);
   const { dictionary, addWordsToDictionary } = useDictionary();
   const { tileNumbers } = useClueData(puzzle);
   const [wordBankWords, setWordBankWords] = useState<string[]>([]);
@@ -238,6 +244,32 @@ export default function CrosswordBuilder({ grid }: Props) {
     autoFillRunning,
     WFCBusy,
   ]);
+
+  const { lockedCellKeys, bannedCellKeys } = useMemo(() => {
+    const size = puzzle.tiles.length;
+    const blacks = puzzle.tiles.map((row) => row.map((t) => t.value === 'black'));
+    const { slots } = buildSlotTopology(size, blacks);
+    const lockedKeySet = new Set(lockedSlots);
+    const bannedSet = new Set(bannedWords);
+    const lockedCells = new Set<string>();
+    const bannedCells = new Set<string>();
+    for (const slot of slots) {
+      const key = slotKey(slot.cells[0].row, slot.cells[0].col, slot.direction);
+      if (lockedKeySet.has(key)) {
+        for (const { row, col } of slot.cells) lockedCells.add(`${row},${col}`);
+      }
+      const word = slot.cells
+        .map(({ row, col }) => {
+          const v = puzzle.tiles[row][col].value;
+          return v === 'empty' || v === 'black' ? '' : v;
+        })
+        .join('');
+      if (word.length === slot.cells.length && bannedSet.has(word)) {
+        for (const { row, col } of slot.cells) bannedCells.add(`${row},${col}`);
+      }
+    }
+    return { lockedCellKeys: lockedCells, bannedCellKeys: bannedCells };
+  }, [puzzle, lockedSlots, bannedWords]);
 
   const puzzleError = useMemo(() => {
     if (autoFillRunning || !wave) return '';
@@ -419,6 +451,8 @@ export default function CrosswordBuilder({ grid }: Props) {
             mkHandleClickTile={mkHandleClickTile}
             mkHandleMouseoverTile={mkHandleMouseoverTile}
             onMouseOut={onTilesMouseOut}
+            lockedCellKeys={lockedCellKeys}
+            bannedCellKeys={bannedCellKeys}
           />
           <PuzzleStats puzzle={puzzle} />
         </div>

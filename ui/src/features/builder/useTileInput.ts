@@ -9,7 +9,13 @@ import {
   LetterType,
   selectCurrentTab,
   selectLetterEntryEnabled,
+  selectLockedSlots,
+  selectBannedWords,
   setPuzzleTileValues,
+  toggleLockedSlot,
+  addBannedWord,
+  removeBannedWord,
+  slotKey,
   TileValueType,
 } from './builderSlice';
 import { ALL_LETTERS } from './constants';
@@ -112,6 +118,8 @@ export default function useTileInput(
 
   const currentTab = useSelector(selectCurrentTab);
   const letterEntryEnabled = useSelector(selectLetterEntryEnabled);
+  const lockedSlots = useSelector(selectLockedSlots);
+  const bannedWords = useSelector(selectBannedWords);
 
   useInsurance(inputQueue, cachedInputQueue, setInputQueue);
 
@@ -146,6 +154,7 @@ export default function useTileInput(
 
   const onKeyDown = useCallback(
     (event) => {
+      if (event.ctrlKey || event.metaKey) return;
       if (!_.includes(SUPPORTED_KEYS, event.key)) return;
       event.preventDefault();
       inputKey(event.key, event.shiftKey);
@@ -412,6 +421,50 @@ export default function useTileInput(
       document.removeEventListener('keyup', onKeyUp);
     };
   }, [onKeyDown, onKeyUp, currentTab, letterEntryEnabled]);
+
+  const onLockBanKeyDown = useCallback(
+    (event: KeyboardEvent) => {
+      if (!selectedTilesState) return;
+      const isCtrl = event.ctrlKey || event.metaKey;
+      if (!isCtrl) return;
+      const k = event.key;
+      if (k !== 'l' && k !== 'L' && k !== 'b' && k !== 'B') return;
+      event.preventDefault();
+      const { locations, direction } = selectedTilesState;
+      if (locations.length === 0) return;
+      const first = locations[0];
+      const key = slotKey(first.row, first.column, direction);
+      if (k === 'l' || k === 'L') {
+        dispatch(toggleLockedSlot(key));
+      } else {
+        const word = locations
+          .map(({ row, column }) => {
+            const v = puzzle.tiles[row]?.[column]?.value;
+            return v === 'empty' || v === 'black' ? '' : v;
+          })
+          .join('');
+        const hasEmpty = locations.some(({ row, column }) => {
+          const v = puzzle.tiles[row]?.[column]?.value;
+          return v === 'empty';
+        });
+        const fullWord = hasEmpty ? '' : word;
+        if (!fullWord) return;
+        if (bannedWords.includes(fullWord)) {
+          dispatch(removeBannedWord(fullWord));
+        } else {
+          dispatch(addBannedWord(fullWord));
+        }
+      }
+    },
+    [selectedTilesState, puzzle, dispatch, lockedSlots, bannedWords]
+  );
+
+  useEffect(() => {
+    document.addEventListener('keydown', onLockBanKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onLockBanKeyDown);
+    };
+  }, [onLockBanKeyDown]);
 
   return { inputKey, releaseKey };
 }
