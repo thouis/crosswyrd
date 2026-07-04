@@ -429,7 +429,9 @@ export class FillEngineInstance {
   }
 
   setPlacedLetters(placedLetters: Map<string, string>): boolean {
-    for (const [key, letter] of placedLetters) {
+    const entries = Array.from(placedLetters.entries());
+    for (let i = 0; i < entries.length; i++) {
+      const [key, letter] = entries[i];
       const [rs, cs] = key.split(',');
       const r = parseInt(rs, 10), c = parseInt(cs, 10);
       if (!this.alphabet.hasLetter(letter)) {
