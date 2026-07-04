@@ -17,11 +17,13 @@ import {
   selectDraggedWord,
   selectFillAssistActive,
   selectPuzzle,
+  clearLockedSlots,
   setDraggedWord,
   setPuzzleState,
   setPuzzleTileValues,
   TileValueType,
 } from './builderSlice';
+import BannedWords from './BannedWords';
 import BuilderTabs from './BuilderTabs';
 import ClueEntry, { useClueData } from './ClueEntry';
 import { ALL_LETTERS } from './constants';
@@ -278,6 +280,7 @@ export default function CrosswordBuilder({ grid }: Props) {
     pushStateHistory({ wave: newWave, puzzle: newPuzzle });
     setWaveState(newWave, newPuzzle);
     dispatch(setPuzzleState(newPuzzle));
+    dispatch(clearLockedSlots());
   }, [dispatch, setWaveState, puzzle, pushStateHistory, wave]);
 
   const handleClickBack = () => {
@@ -444,6 +447,8 @@ export default function CrosswordBuilder({ grid }: Props) {
                     wave={wave}
                     puzzle={puzzle}
                     setWordLocationsGrid={setWordLocationsGrid}
+                    words={wordBankWords}
+                    setWords={setWordBankWords}
                   />
                 }
                 clueEntry={
@@ -453,6 +458,9 @@ export default function CrosswordBuilder({ grid }: Props) {
                     updateSelection={updateSelection}
                     selectedTilesState={selectedTilesState}
                   />
+                }
+                bannedWords={
+                  <BannedWords puzzle={puzzle} bankWords={wordBankWords} />
                 }
               />
             </>

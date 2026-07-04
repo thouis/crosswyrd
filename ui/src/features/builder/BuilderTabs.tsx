@@ -51,6 +51,7 @@ interface Props {
   wordSelector: React.ReactNode;
   wordBank: React.ReactNode;
   clueEntry: React.ReactNode;
+  bannedWords: React.ReactNode;
 }
 
 function BuilderTabs({
@@ -60,6 +61,7 @@ function BuilderTabs({
   wordSelector,
   wordBank,
   clueEntry,
+  bannedWords,
 }: Props) {
   const dispatch = useDispatch();
 
@@ -91,7 +93,8 @@ function BuilderTabs({
         >
           <Tab label="Fill" {...a11yProps(0)} />
           <Tab label="Word Bank" {...a11yProps(1)} />
-          <Tab label="Clues" {...a11yProps(1)} />
+          <Tab label="Clues" {...a11yProps(2)} />
+          <Tab label="Ban List" {...a11yProps(3)} />
         </Tabs>
       </Box>
       <TabPanel value={currentTab} index={0}>
@@ -102,6 +105,9 @@ function BuilderTabs({
       </TabPanel>
       <TabPanel value={currentTab} index={2}>
         {clueEntry}
+      </TabPanel>
+      <TabPanel value={currentTab} index={3}>
+        {bannedWords}
       </TabPanel>
     </Box>
   );

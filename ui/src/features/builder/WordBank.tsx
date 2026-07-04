@@ -130,11 +130,12 @@ interface Props {
   wave: WaveType | null;
   puzzle: CrosswordPuzzleType;
   setWordLocationsGrid: (grid: WordLocationsGridType | null) => void;
+  words: string[];
+  setWords: (words: string[]) => void;
 }
 
-function WordBank({ wave, puzzle, setWordLocationsGrid }: Props) {
+function WordBank({ wave, puzzle, setWordLocationsGrid, words, setWords }: Props) {
   const [currentWord, setCurrentWord] = useState('');
-  const [words, setWords] = useState<string[]>([]);
 
   const draggedWord = useSelector(selectDraggedWord);
 
