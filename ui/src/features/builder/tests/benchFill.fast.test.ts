@@ -95,12 +95,15 @@ describe('fill engine fast benchmark', () => {
     allSuccessMs.sort((a, b) => a - b);
     const p50 = allSuccessMs.length > 0 ? allSuccessMs[Math.floor(allSuccessMs.length * 0.5)] : 0;
     const p90 = allSuccessMs.length > 0 ? allSuccessMs[Math.floor(allSuccessMs.length * 0.9)] : 0;
-    console.log(`Total: ${successes}/${total} Y  p50=${p50.toFixed(0)}ms p90=${p90.toFixed(0)}ms max=${allSuccessMs.length > 0 ? allSuccessMs[allSuccessMs.length - 1].toFixed(0) : 'n/a'}ms`);
+    const maxMs = allSuccessMs.length > 0 ? allSuccessMs[allSuccessMs.length - 1].toFixed(0) : 'n/a';
+
+    const regressionNote = successes < Y_BASELINE ? ` ⚠️ REGRESSION (baseline ${Y_BASELINE})` : ` ✓ baseline ${Y_BASELINE}`;
+    const hardFailNote = successes < HARD_FAIL_THRESHOLD ? ` 💥 HARD FAIL (threshold ${HARD_FAIL_THRESHOLD})` : '';
+    console.log(`\n  RESULT: ${successes}/${total} Y${regressionNote}${hardFailNote}`);
+    console.log(`  p50=${p50.toFixed(0)}ms  p90=${p90.toFixed(0)}ms  max=${maxMs}ms\n`);
 
     if (unexpectedN.length > 0)
       console.error(`UNEXPECTED N (correctness bug): ${unexpectedN.join(', ')}`);
-    if (successes < Y_BASELINE)
-      console.warn(`⚠️  REGRESSION: ${successes} Y < baseline ${Y_BASELINE}${successes < HARD_FAIL_THRESHOLD ? ' — HARD FAIL' : ''}`);
 
     expect(unexpectedN).toHaveLength(0);
     expect(successes).toBeGreaterThanOrEqual(HARD_FAIL_THRESHOLD);
