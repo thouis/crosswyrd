@@ -21,9 +21,9 @@ import {
   addBannedWord,
   clearBannedWords,
   removeBannedWord,
+  selectAlphabetLetters,
   selectBannedWords,
 } from './builderSlice';
-import { ALL_LETTERS } from './constants';
 
 interface Props {
   puzzle: CrosswordPuzzleType;
@@ -68,6 +68,8 @@ function getFilledWords(puzzle: CrosswordPuzzleType): Set<string> {
 export default function BannedWords({ puzzle, bankWords }: Props) {
   const dispatch = useDispatch();
   const bannedWords = useSelector(selectBannedWords);
+  const alphabetLetters = useSelector(selectAlphabetLetters);
+  const alphabetSet = useMemo(() => new Set(alphabetLetters), [alphabetLetters]);
   const [inputWord, setInputWord] = useState('');
   const [bankWarningOpen, setBankWarningOpen] = useState(false);
   const [bankWarningWord, setBankWarningWord] = useState('');
@@ -79,7 +81,7 @@ export default function BannedWords({ puzzle, bankWords }: Props) {
     setInputWord(
       _.join(
         _.take(
-          _.filter(_.toLower(event.target.value), (c) => _.includes(ALL_LETTERS, c)),
+          _.filter(_.toLower(event.target.value), (c) => alphabetSet.has(c)),
           puzzle.tiles.length
         ),
         ''

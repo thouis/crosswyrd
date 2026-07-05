@@ -1,5 +1,5 @@
 import _ from 'lodash';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 
 import { randomId } from '../../app/util';
@@ -7,6 +7,7 @@ import {
   CrosswordPuzzleType,
   getSymmetricTile,
   LetterType,
+  selectAlphabetLetters,
   selectCurrentTab,
   selectLetterEntryEnabled,
   selectLockedSlots,
@@ -18,14 +19,12 @@ import {
   slotKey,
   TileValueType,
 } from './builderSlice';
-import { ALL_LETTERS } from './constants';
 import {
   SelectedTilesStateType,
   UpdateSelectionType,
 } from './useTileSelection';
 import { TileUpdateType } from './useWaveFunctionCollapse';
 
-const UPPERCASE_LETTERS = _.map(ALL_LETTERS, _.toUpper);
 const PERIOD = '.';
 const BACKSPACE = 'Backspace';
 const TAB = 'Tab';
@@ -36,20 +35,8 @@ const RIGHT = 'ArrowRight';
 const UP = 'ArrowUp';
 const DOWN = 'ArrowDown';
 const SPACEBAR = ' ';
-const SUPPORTED_KEYS = [
-  ...ALL_LETTERS,
-  ...UPPERCASE_LETTERS,
-  PERIOD,
-  BACKSPACE,
-  TAB,
-  ENTER,
-  LEFT,
-  RIGHT,
-  UP,
-  DOWN,
-  SPACEBAR,
-] as const;
-export type SupportedKeysType = (typeof SUPPORTED_KEYS)[number];
+const NON_LETTER_KEYS = new Set([PERIOD, BACKSPACE, TAB, ENTER, LEFT, RIGHT, UP, DOWN, SPACEBAR]);
+export type SupportedKeysType = string;
 
 const INSURANCE_STRING = 'asecretsequencetoensuremycodehasntbeenplagiarized';
 function useInsurance(
@@ -120,17 +107,18 @@ export default function useTileInput(
   const letterEntryEnabled = useSelector(selectLetterEntryEnabled);
   const lockedSlots = useSelector(selectLockedSlots);
   const bannedWords = useSelector(selectBannedWords);
+  const alphabetLetters = useSelector(selectAlphabetLetters);
+  const lowerSet = useMemo(() => new Set(alphabetLetters), [alphabetLetters]);
+  const upperSet = useMemo(() => new Set(alphabetLetters.map(ch => ch.toUpperCase())), [alphabetLetters]);
 
   useInsurance(inputQueue, cachedInputQueue, setInputQueue);
 
   const inputKey = useCallback(
     (rawKey: SupportedKeysType, shift?: boolean) => {
       // Make letter keys lowercase
-      const key = _.includes(UPPERCASE_LETTERS, rawKey)
-        ? _.toLower(rawKey)
-        : rawKey;
+      const key = upperSet.has(rawKey) ? rawKey.toLowerCase() : rawKey;
       // Reject keys we don't support
-      if (!_.includes(SUPPORTED_KEYS, key)) return;
+      if (!lowerSet.has(key) && !NON_LETTER_KEYS.has(key)) return;
       // PERIOD is not supported in player mode
       if (playerMode && key === PERIOD) return;
       clearHoveredTile();
@@ -142,31 +130,31 @@ export default function useTileInput(
       cachedInputQueue.current.push(trueKey);
       setInputQueue(cachedInputQueue.current);
     },
-    [clearHoveredTile, playerMode]
+    [clearHoveredTile, playerMode, lowerSet, upperSet]
   );
   const releaseKey = useCallback((rawKey: SupportedKeysType) => {
     // Make letter keys lowercase
-    const key = _.includes(UPPERCASE_LETTERS, rawKey)
-      ? _.toLower(rawKey)
-      : rawKey;
+    const key = upperSet.has(rawKey) ? rawKey.toLowerCase() : rawKey;
     keyStates.current[key] = 'up';
-  }, []);
+  }, [upperSet]);
 
   const onKeyDown = useCallback(
     (event) => {
       if (event.ctrlKey || event.metaKey) return;
-      if (!_.includes(SUPPORTED_KEYS, event.key)) return;
+      const k = event.key;
+      if (!lowerSet.has(k) && !upperSet.has(k) && !NON_LETTER_KEYS.has(k)) return;
       event.preventDefault();
-      inputKey(event.key, event.shiftKey);
+      inputKey(k, event.shiftKey);
     },
-    [inputKey]
+    [inputKey, lowerSet, upperSet]
   );
   const onKeyUp = useCallback(
     (event) => {
-      if (!_.includes(SUPPORTED_KEYS, event.key)) return;
-      releaseKey(event.key);
+      const k = event.key;
+      if (!lowerSet.has(k) && !upperSet.has(k) && !NON_LETTER_KEYS.has(k)) return;
+      releaseKey(k);
     },
-    [releaseKey]
+    [releaseKey, lowerSet, upperSet]
   );
 
   // Churn through queue

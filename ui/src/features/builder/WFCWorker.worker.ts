@@ -4,6 +4,7 @@ import { expose } from 'comlink';
 import _ from 'lodash';
 
 import { Alphabet, ENGLISH } from './Alphabet';
+import { deriveAlphabet } from './alphabetUtils';
 import { CrosswordPuzzleType, LetterType } from './builderSlice';
 import {
   ElementType,
@@ -55,6 +56,13 @@ const indexReady: Promise<void> = fetch(`${process.env.PUBLIC_URL}/word_list.jso
   .then(r => r.json())
   .then((words: string[]) => {
     baseWordList = words;
+    try {
+      workerAlphabet = deriveAlphabet(words);
+      console.info(`[WFCWorker] derived alphabet (${workerAlphabet.size} chars): ${workerAlphabet.letters.slice().join('')}`);
+    } catch (e) {
+      console.error('[WFCWorker] alphabet derivation failed, falling back to ENGLISH:', e);
+      workerAlphabet = ENGLISH;
+    }
     workerWordIndex = buildWordIndex(words, workerAlphabet);
   });
 
@@ -212,6 +220,7 @@ export interface WFCWorkerAPIType {
   waitForIndex: () => Promise<void>;
   resetIndex: () => Promise<void>;
   setAlphabet: (letters: string[]) => void;
+  getAlphabet: () => Promise<string[]>;
   withTileUpdates: (
     wave: WaveType,
     puzzle: CrosswordPuzzleType,
@@ -262,6 +271,11 @@ const WFCWorkerAPI: WFCWorkerAPIType = {
     }
   },
 
+  getAlphabet: async (): Promise<string[]> => {
+    await indexReady;
+    return workerAlphabet.letters.slice();
+  },
+
   withTileUpdates: async (
     wave: WaveType,
     puzzle: CrosswordPuzzleType,
@@ -290,6 +304,26 @@ const WFCWorkerAPI: WFCWorkerAPIType = {
     // Await the word-list fetch instead of early-returning so bank words sent
     // before the fetch resolves are not silently dropped.
     if (!workerWordIndex) await indexReady;
+    const newChars = new Set<string>();
+    for (const w of words) {
+      for (const ch of w) {
+        if (ch && !workerAlphabet.hasLetter(ch)) newChars.add(ch);
+      }
+    }
+    if (newChars.size > 0) {
+      const combined = Array.from(new Set(Array.from(workerAlphabet.letters).concat(Array.from(newChars)))).sort();
+      if (combined.length > 64) {
+        const safe = words.filter(w => Array.from(w).every(ch => workerAlphabet.hasLetter(ch)));
+        console.warn(`[WFCWorker] alphabet would exceed 64 chars; ignoring ${words.length - safe.length} bank word(s)`);
+        const insertedSafe = addWordsToWordIndex(workerWordIndex!, safe, workerAlphabet);
+        recordAdd(wordSourcePool, safe, source, insertedSafe);
+        return;
+      }
+      workerAlphabet = new Alphabet(combined);
+      console.info(`[WFCWorker] alphabet extended to ${workerAlphabet.size} chars: ${combined.join('')}`);
+      workerWordIndex = buildWordIndex(baseWordList, workerAlphabet);
+      readdBankWords();
+    }
     const inserted = addWordsToWordIndex(workerWordIndex!, words, workerAlphabet);
     recordAdd(wordSourcePool, words, source, inserted);
   },
