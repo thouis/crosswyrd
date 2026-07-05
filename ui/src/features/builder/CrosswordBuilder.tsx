@@ -23,6 +23,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import { GridWithVersionType } from '../app/Crosswyrd';
 import {
   CrosswordPuzzleType,
+  selectAlphabetLetters,
   selectCurrentTab,
   selectDraggedWord,
   selectFillAssistActive,
@@ -40,7 +41,6 @@ import { buildSlotTopology } from './fillEngine';
 import BannedWords from './BannedWords';
 import BuilderTabs from './BuilderTabs';
 import ClueEntry, { useClueData } from './ClueEntry';
-import { ALL_LETTERS } from './constants';
 import DraggedWord from './DraggedWord';
 import PuzzleBanner from './PuzzleBanner';
 import PuzzleStats from './PuzzleStats';
@@ -113,6 +113,7 @@ export default function CrosswordBuilder({ grid }: Props) {
   const fillAssistActive = useSelector(selectFillAssistActive);
   const lockedSlots = useSelector(selectLockedSlots);
   const bannedWords = useSelector(selectBannedWords);
+  const alphabetLetters = useSelector(selectAlphabetLetters);
   const { dictionary, addWordsToDictionary } = useDictionary();
   const { tileNumbers } = useClueData(puzzle);
   const [wordBankWords, setWordBankWords] = useState<string[]>([]);
@@ -377,7 +378,7 @@ export default function CrosswordBuilder({ grid }: Props) {
         // The word must be a valid type (" "s are OK)
         !_.every(
           word,
-          (letter) => _.includes(ALL_LETTERS, letter) || letter === ' '
+          (letter) => alphabetLetters.includes(letter) || letter === ' '
         )
       )
         return;
