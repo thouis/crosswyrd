@@ -28,13 +28,13 @@ import { useDispatch, useSelector } from 'react-redux';
 
 import {
   CrosswordPuzzleType,
+  selectAlphabetLetters,
   setDraggedWord,
   selectDraggedWord,
   selectLockedSlots,
   selectBannedWords,
   TileType,
 } from './builderSlice';
-import { ALL_LETTERS } from './constants';
 import { LocationType } from './CrosswordBuilder';
 import { ElementType, WaveType } from './useWaveFunctionCollapse';
 
@@ -176,6 +176,8 @@ function WordBank({ wave, puzzle, setWordLocationsGrid, words, setWords }: Props
   const draggedWord = useSelector(selectDraggedWord);
   const lockedSlots = useSelector(selectLockedSlots);
   const bannedWords = useSelector(selectBannedWords);
+  const alphabetLetters = useSelector(selectAlphabetLetters);
+  const alphabetSet = useMemo(() => new Set(alphabetLetters), [alphabetLetters]);
 
   const dispatch = useDispatch();
 
@@ -210,7 +212,7 @@ function WordBank({ wave, puzzle, setWordLocationsGrid, words, setWords }: Props
       _.join(
         _.take(
           _.filter(_.toLower(event.target.value), (char) =>
-            _.includes(ALL_LETTERS, char)
+            alphabetSet.has(char)
           ),
           puzzle.tiles.length
         ),

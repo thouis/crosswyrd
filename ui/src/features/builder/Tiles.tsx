@@ -67,9 +67,9 @@ function Tile({
       wordLocationsGrid[rowIndex][columnIndex].down);
   const tileValue =
     draggedWord && draggedWordLetterIndex >= 0 // User is hovering with a dragged word
-      ? _.toUpper(draggedWord[draggedWordLetterIndex])
+      ? draggedWord[draggedWordLetterIndex].toUpperCase()
       : !_.includes(['empty', 'black'], tile.value)
-      ? _.toUpper(tile.value)
+      ? tile.value.toUpperCase()
       : '';
   const element = wave && wave.elements[rowIndex][columnIndex];
   const tileNumber = tileNumbers[rowIndex][columnIndex];

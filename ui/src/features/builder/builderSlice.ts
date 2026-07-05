@@ -7,9 +7,9 @@ import { DirectionType } from './useTileSelection';
 import { TileUpdateType, WaveType } from './useWaveFunctionCollapse';
 import { devMode, randomId } from '../../app/util';
 
-export type LetterType = (typeof ALL_LETTERS)[number];
+export type LetterType = string;
 
-export type TileValueType = LetterType | 'empty' | 'black';
+export type TileValueType = string | 'empty' | 'black';
 export interface TileType {
   value: TileValueType;
 }
@@ -47,6 +47,7 @@ interface BuilderState {
   publishInfo: PublishInfoType;
   lockedSlots: string[];
   bannedWords: string[];
+  alphabetLetters: string[];
 }
 
 export function slotKey(row: number, col: number, direction: 'across' | 'down'): string {
@@ -80,6 +81,7 @@ const initialState: BuilderState = {
   publishInfo: { title: '', author: '', id: null },
   lockedSlots: [],
   bannedWords: [],
+  alphabetLetters: [...ALL_LETTERS],
 };
 
 export function getSymmetricTile(
@@ -247,6 +249,9 @@ export const builderSlice = createSlice({
     },
     clearLockedSlots: (state) => { state.lockedSlots = []; },
     clearBannedWords: (state) => { state.bannedWords = []; },
+    setAlphabetLetters: (state, action: PayloadAction<string[]>) => {
+      state.alphabetLetters = action.payload;
+    },
   },
 });
 
@@ -274,6 +279,7 @@ export const {
   addBannedWord,
   removeBannedWord,
   clearBannedWords,
+  setAlphabetLetters,
 } = builderSlice.actions;
 
 export const selectPuzzle = (state: RootState) => state.builder.puzzle;
@@ -299,5 +305,7 @@ export const selectLockedSlots = (state: RootState) =>
   state.builder.lockedSlots;
 export const selectBannedWords = (state: RootState) =>
   state.builder.bannedWords;
+export const selectAlphabetLetters = (state: RootState) =>
+  state.builder.alphabetLetters;
 
 export default builderSlice.reducer;

@@ -7,9 +7,11 @@ import {
   bumpPuzzleVersion,
   CrosswordPuzzleType,
   LetterType,
+  selectAlphabetLetters,
   selectBannedWords,
   selectFillAssistActive,
   selectWave,
+  setAlphabetLetters,
   setWaveState as reduxSetWaveState,
   TileValueType,
 } from './builderSlice';
@@ -44,7 +46,8 @@ export type FillWaveUpdate =
 
 export function useWordBankSync(
   workerRef: MutableRefObject<Remote<WFCWorkerAPIType> | null>,
-  wordBankWords: string[]
+  wordBankWords: string[],
+  onAlphabetChange?: (letters: string[]) => void
 ): void {
   const prevBankWordsRef = useRef<string[]>([]);
   useEffect(() => {
@@ -54,7 +57,13 @@ export function useWordBankSync(
     const nextSet = new Set(wordBankWords);
     const added = wordBankWords.filter(w => !prevSet.has(w));
     const removed = prev.filter(w => !nextSet.has(w));
-    if (added.length > 0) workerRef.current.addWordsToIndex(added, 'bank');
+    if (added.length > 0) {
+      workerRef.current.addWordsToIndex(added, 'bank').then(() => {
+        if (onAlphabetChange) {
+          workerRef.current?.getAlphabet().then(letters => onAlphabetChange(letters));
+        }
+      });
+    }
     if (removed.length > 0) workerRef.current.removeWordsFromIndex(removed);
     prevBankWordsRef.current = wordBankWords;
   }, [wordBankWords]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -116,12 +125,12 @@ function computeEntropy(options: LetterType[]): number {
   return entropy;
 }
 
-export function waveFromPuzzle(puzzle: CrosswordPuzzleType): WaveType {
+export function waveFromPuzzle(puzzle: CrosswordPuzzleType, alphabetLetters: string[] = [...ALL_LETTERS]): WaveType {
   // Returns a wave given the pattern of the puzzle. The puzzle values are NOT
   // transferred, only whether the value is solid or not is taken into account.
   // I.e., each non-solid tile has all letters as options.
   const solid = (tile) => tile.value === 'black';
-  const options = (tile) => (solid(tile) ? [] : [...ALL_LETTERS]);
+  const options = (tile) => (solid(tile) ? [] : alphabetLetters.slice());
   return {
     elements: _.map(puzzle.tiles, (row, rowIndex) =>
       _.map(row, (tile, columnIndex) => ({
@@ -136,11 +145,12 @@ export function waveFromPuzzle(puzzle: CrosswordPuzzleType): WaveType {
   };
 }
 function waveFromPuzzleWithLettersCollapsed(
-  puzzle: CrosswordPuzzleType
+  puzzle: CrosswordPuzzleType,
+  alphabetLetters?: string[]
 ): WaveType {
   // Return a new wave for the puzzle where all tiles with letters on them are
   // fully collapsed
-  const newWave = waveFromPuzzle(puzzle);
+  const newWave = waveFromPuzzle(puzzle, alphabetLetters);
   _.forEach(puzzle.tiles, (row, rowIndex) =>
     _.forEach(row, (tile, columnIndex) => {
       if (tile.value !== 'black' && tile.value !== 'empty') {
@@ -191,15 +201,19 @@ export default function useWaveFunctionCollapse(
   const wave = useSelector(selectWave);
   const fillAssistActive = useSelector(selectFillAssistActive);
   const bannedWords = useSelector(selectBannedWords);
+  const alphabetLetters = useSelector(selectAlphabetLetters);
   const dispatch = useDispatch();
 
   // Ingest puzzle into wave
   useEffect(() => {
     if (wave) return;
     // TODO: Request this from WFCWorker?
-    dispatch(reduxSetWaveState(waveFromPuzzleWithLettersCollapsed(puzzle)));
+    dispatch(reduxSetWaveState(waveFromPuzzleWithLettersCollapsed(puzzle, alphabetLettersRef.current)));
     previousPuzzle.current = puzzle;
   }, [dispatch, puzzle, wave]);
+
+  const alphabetLettersRef = useRef(alphabetLetters);
+  useEffect(() => { alphabetLettersRef.current = alphabetLetters; }, [alphabetLetters]);
 
   // Activate and deactivate fill assist.
   const prevFillAssistActive = useRef(fillAssistActive);
@@ -228,9 +242,17 @@ export default function useWaveFunctionCollapse(
   useEffect(() => {
     const worker = wrap<Remote<WFCWorkerAPIType>>(new WFCWorker());
     WFCWorkerRef.current = worker;
-    worker.waitForIndex().then(() => setWordIndexReady(true));
-  }, []);
-  useWordBankSync(WFCWorkerRef, wordBankWords);
+    worker.waitForIndex().then(async () => {
+      const letters = await worker.getAlphabet();
+      dispatch(setAlphabetLetters(letters));
+      setWordIndexReady(true);
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useWordBankSync(WFCWorkerRef, wordBankWords, (letters) => {
+    if (letters.join('') !== alphabetLettersRef.current.join('')) {
+      dispatch(setAlphabetLetters(letters));
+    }
+  });
 
   const updateWaveWithTileUpdates = useCallback(
     async (
@@ -251,7 +273,7 @@ export default function useWaveFunctionCollapse(
             tileUpdates,
             bannedWords
           )
-        : waveFromPuzzleWithLettersCollapsed(puzzle);
+        : waveFromPuzzleWithLettersCollapsed(puzzle, alphabetLettersRef.current);
       const newWaveWithVersion = {
         ...newWave,
         puzzleVersion: newPuzzleVersion || newWave.puzzleVersion,
