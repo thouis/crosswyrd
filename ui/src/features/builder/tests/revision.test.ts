@@ -118,6 +118,7 @@ describe('validateSolvedGrid', () => {
     const result = validateSolvedGrid(grid!, twoCorners, wordsByLength, undefined, false, ENGLISH);
     expect(result.valid).toBe(true);
     expect(result.errors).toHaveLength(0);
+    expect(result.unknownWords).toHaveLength(0);
   });
 
   it('rejects a grid with a word not in dictionary', () => {
@@ -129,6 +130,10 @@ describe('validateSolvedGrid', () => {
     const result = validateSolvedGrid(badGrid, twoCorners, wordsByLength, undefined, false, ENGLISH);
     expect(result.valid).toBe(false);
     expect(result.errors.some(e => e.includes('not in dictionary'))).toBe(true);
+    // Structured unknownWords mirrors the not-in-dictionary errors
+    expect(result.unknownWords).toContain('zzzz');
+    const notDictCount = result.errors.filter(e => e.includes('not in dictionary')).length;
+    expect(result.unknownWords).toHaveLength(notDictCount);
   });
 
   it('rejects a grid with duplicate words', () => {
@@ -187,6 +192,8 @@ describe('validateSolvedGrid', () => {
     const notDictErrors = result.errors.filter(e => e.includes('not in dictionary'));
     expect(notDictErrors).toHaveLength(1);
     expect(notDictErrors[0]).toContain('zzzz');
+    // unknownWords contains exactly the out-of-dict words
+    expect(result.unknownWords).toEqual(['zzzz']);
   });
 
   it('accepts a word present in bankWords even if not in dictionary', () => {
@@ -249,7 +256,7 @@ describe('deduplicateAfterPinning', () => {
 // ---------------------------------------------------------------------------
 
 describe('runRevisionFill', () => {
-  it('replaces one slot in a solved grid', () => {
+  it('replaces one slot in a solved grid', async () => {
     const grid = getFilledGrid(42);
     expect(grid).not.toBeNull();
 
@@ -258,7 +265,7 @@ describe('runRevisionFill', () => {
       { row: 1, col: 0 }, { row: 1, col: 1 }, { row: 1, col: 2 }, { row: 1, col: 3 },
     ];
 
-    const result = runRevisionFill({
+    const result = await runRevisionFill({
       solvedGrid: grid!,
       blacks: twoCorners,
       wordsByLength,
@@ -277,7 +284,7 @@ describe('runRevisionFill', () => {
     expect(validation.valid).toBe(true);
   });
 
-  it('banned word does not appear in result', () => {
+  it('banned word does not appear in result', async () => {
     const grid = getFilledGrid(42);
     expect(grid).not.toBeNull();
 
@@ -287,7 +294,7 @@ describe('runRevisionFill', () => {
       { row: 1, col: 0 }, { row: 1, col: 1 }, { row: 1, col: 2 }, { row: 1, col: 3 },
     ];
 
-    const result = runRevisionFill({
+    const result = await runRevisionFill({
       solvedGrid: grid!,
       blacks: twoCorners,
       wordsByLength,
@@ -309,7 +316,7 @@ describe('runRevisionFill', () => {
     }
   });
 
-  it('locked slot word is unchanged in result', () => {
+  it('locked slot word is unchanged in result', async () => {
     const grid = getFilledGrid(42);
     expect(grid).not.toBeNull();
 
@@ -322,7 +329,7 @@ describe('runRevisionFill', () => {
       { row: 1, col: 0 }, { row: 1, col: 1 }, { row: 1, col: 2 }, { row: 1, col: 3 },
     ];
 
-    const result = runRevisionFill({
+    const result = await runRevisionFill({
       solvedGrid: grid!,
       blacks: twoCorners,
       wordsByLength,
@@ -341,7 +348,7 @@ describe('runRevisionFill', () => {
     expect(newLockedWord).toBe(lockedWord);
   });
 
-  it('returns a valid grid (no duplicates, all words in dict)', () => {
+  it('returns a valid grid (no duplicates, all words in dict)', async () => {
     const grid = getFilledGrid(7);
     expect(grid).not.toBeNull();
 
@@ -350,7 +357,7 @@ describe('runRevisionFill', () => {
     const firstSlot = slots[0];
     const removedCells = firstSlot.cells.map(({ row, col }) => ({ row, col }));
 
-    const result = runRevisionFill({
+    const result = await runRevisionFill({
       solvedGrid: grid!,
       blacks: twoCorners,
       wordsByLength,
@@ -364,5 +371,94 @@ describe('runRevisionFill', () => {
     expect(result).not.toBeNull();
     const validation = validateSolvedGrid(result!.grid, twoCorners, wordsByLength, undefined, false, ENGLISH);
     expect(validation.valid).toBe(true);
+  });
+
+  it('succeeds when a locked slot contains a word not in the dictionary', async () => {
+    // Exercises the gridWords injection: the locked row-2 across word is removed
+    // from the dictionary, so pinning its cells would contradict unless the word
+    // currently in the solved grid is injected as a bank word.
+    const grid = getFilledGrid(42);
+    expect(grid).not.toBeNull();
+
+    const lockedWord = [grid![2][0], grid![2][1], grid![2][2], grid![2][3]].join('');
+    const lockedCells = [
+      { row: 2, col: 0 }, { row: 2, col: 1 }, { row: 2, col: 2 }, { row: 2, col: 3 },
+    ];
+    const removedCells = [
+      { row: 1, col: 0 }, { row: 1, col: 1 }, { row: 1, col: 2 }, { row: 1, col: 3 },
+    ];
+
+    // Dictionary without the locked word
+    const dictMinus = new Map<number, string[]>([
+      [3, wordList3],
+      [4, wordList4.filter(w => w !== lockedWord)],
+    ]);
+    expect(dictMinus.get(4)).not.toContain(lockedWord);
+
+    const result = await runRevisionFill({
+      solvedGrid: grid!,
+      blacks: twoCorners,
+      wordsByLength: dictMinus,
+      bannedWords: [],
+      removedSlotCells: [removedCells],
+      lockedSlotCells: [lockedCells],
+      seed: 99,
+      timeoutMs: 10000,
+      alphabet: ENGLISH,
+    });
+
+    expect(result).not.toBeNull();
+    expect(result!.success).toBe(true);
+    const newGrid = result!.grid;
+    const newLockedWord = [newGrid[2][0], newGrid[2][1], newGrid[2][2], newGrid[2][3]].join('');
+    expect(newLockedWord).toBe(lockedWord);
+    // The rest of the grid must validate against the reduced dict + locked word as bank
+    const validation = validateSolvedGrid(newGrid, twoCorners, dictMinus, new Set([lockedWord]), false, ENGLISH);
+    expect(validation.valid).toBe(true);
+  });
+
+  it('banned word that is also a bank word does not appear even when BFS expands', async () => {
+    // 3x3 word square. Removing the middle across slot leaves all its cells
+    // pinned by the (non-free) down slots; the only word fitting "ore" is banned,
+    // so the initial attempt contradicts and the BFS must expand to the down
+    // slots before a solution ('bre'/'cbw') is reachable. The banned word 'ore'
+    // is also passed as a bankWords entry — it must still never appear.
+    const blacks3 = [
+      [false, false, false],
+      [false, false, false],
+      [false, false, false],
+    ];
+    const solvedGrid = [
+      ['c', 'a', 't'],
+      ['o', 'r', 'e'],
+      ['w', 'e', 'd'],
+    ];
+    const dict3 = new Map<number, string[]>([
+      [3, ['cat', 'ore', 'wed', 'cow', 'are', 'ted', 'bre', 'cbw']],
+    ]);
+    const removedCells = [
+      { row: 1, col: 0 }, { row: 1, col: 1 }, { row: 1, col: 2 },
+    ];
+
+    const result = await runRevisionFill({
+      solvedGrid,
+      blacks: blacks3,
+      wordsByLength: dict3,
+      bannedWords: ['ore'],
+      removedSlotCells: [removedCells],
+      bankWords: ['ore'],
+      seed: 7,
+      timeoutMs: 10000,
+      alphabet: ENGLISH,
+    });
+
+    expect(result).not.toBeNull();
+    expect(result!.success).toBe(true);
+    const newGrid = result!.grid;
+    const { slots } = buildSlotTopology(3, blacks3);
+    for (const slot of slots) {
+      const word = slot.cells.map(({ row, col }) => newGrid[row][col]).join('');
+      expect(word).not.toBe('ore');
+    }
   });
 });

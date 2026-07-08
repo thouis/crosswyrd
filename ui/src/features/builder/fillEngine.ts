@@ -902,6 +902,8 @@ export function buildClueMap(
 export interface ValidationResult {
   valid: boolean;
   errors: string[];
+  /** Words that failed the "not in dictionary or bank" check. */
+  unknownWords: string[];
 }
 
 export function validateSolvedGrid(
@@ -914,6 +916,7 @@ export function validateSolvedGrid(
 ): ValidationResult {
   const size = solvedGrid.length;
   const errors: string[] = [];
+  const unknownWords: string[] = [];
   const validCharSet = alphabet ? new Set(alphabet.letters) : null;
   const isValidChar = (ch: string) => validCharSet ? validCharSet.has(ch) : (ch >= 'a' && ch <= 'z');
   const isValidWord = (w: string) => w.length > 0 && Array.from(w).every(isValidChar);
@@ -940,6 +943,7 @@ export function validateSolvedGrid(
     const inBank = bankWords?.has(word) ?? false;
     if (!inDict && !inBank) {
       errors.push(`${label}: "${word}" not in dictionary or bank`);
+      unknownWords.push(word);
     }
     if (usedWords.has(word)) {
       errors.push(`${label}: "${word}" duplicates ${usedWords.get(word)}`);
@@ -948,7 +952,7 @@ export function validateSolvedGrid(
     }
   });
 
-  return { valid: errors.length === 0, errors };
+  return { valid: errors.length === 0, errors, unknownWords };
 }
 
 // ---------------------------------------------------------------------------
@@ -1013,34 +1017,35 @@ function revisionFindSlotId(
   return -1;
 }
 
-function revisionTryFill(
-  freeSet: Set<number>,
-  filteredWords: Map<number, string[]>,
-  slots: SlotTopology['slots'],
-  solvedGrid: string[][],
-  blacks: boolean[][],
-  bankWords: string[],
-  seed: number,
-  timeoutMs: number,
-  alphabet: Alphabet
-): FillResult | null {
-  const size = blacks.length;
-  const pinnedCells = revisionBuildPinnedCells(solvedGrid, slots, freeSet);
-  const engine = createFillEngine({ size, blacks, wordsByLength: filteredWords, bankWords, seed, timeoutMs, alphabet });
-  if (pinnedCells.size > 0 && !engine.setPlacedLetters(pinnedCells)) return null;
-  if (!engine.deduplicateAfterPinning()) return null;
-  while (!engine.step(10000)) { /* loop */ }
-  const result = engine.getResult();
-  return result.success ? result : null;
+export interface RevisionFillHooks {
+  /** Throttled mask-based progress updates during filling. */
+  onProgress?: (update: FillProgressUpdate) => void;
+  /** Return true to abort; runRevisionFill then resolves to null. */
+  isStop?: () => boolean;
+  /** engine.step batch size, default 10000. */
+  stepSize?: number;
+  /** If true, await setTimeout(0) between step batches. */
+  yieldBetweenSteps?: boolean;
+  /** Minimum ms between onProgress calls, default 100. */
+  progressIntervalMs?: number;
 }
 
-export function runRevisionFill(config: RevisionFillConfig): FillResult | null {
+export async function runRevisionFill(
+  config: RevisionFillConfig,
+  hooks: RevisionFillHooks = {}
+): Promise<FillResult | null> {
   const {
     solvedGrid, blacks, bannedWords,
     removedSlotCells, lockedSlotCells = [],
     bankWords = [], seed = 0, timeoutMs = 30000,
     alphabet = ENGLISH,
   } = config;
+  const {
+    onProgress, isStop,
+    stepSize = 10000,
+    yieldBetweenSteps = false,
+    progressIntervalMs = 100,
+  } = hooks;
 
   const bannedSet = new Set(bannedWords);
   const filteredWords = new Map<number, string[]>();
@@ -1048,18 +1053,53 @@ export function runRevisionFill(config: RevisionFillConfig): FillResult | null {
     filteredWords.set(len, words.filter(w => !bannedSet.has(w)));
   });
 
-  const { slots } = buildSlotTopology(blacks.length, blacks);
+  const size = blacks.length;
+  const { slots } = buildSlotTopology(size, blacks);
 
   // Collect all words currently in the solved grid so non-dictionary proper nouns
   // in non-free slots don't cause a propagation contradiction when their cells get pinned.
   const gridWords = new Set<string>();
   for (const slot of slots) {
     const word = slot.cells.map(({ row, col }) => solvedGrid[row][col]).join('');
-    if (word.length === slot.cells.length && !word.includes('')) gridWords.add(word);
+    if (word.length === slot.cells.length) gridWords.add(word);
   }
   const filteredBankWords = Array.from(
     new Set(Array.from(gridWords).concat(bankWords).filter(w => !bannedSet.has(w)))
   );
+
+  let stopped = false;
+  const checkStop = () => {
+    if (!stopped && isStop?.()) stopped = true;
+    return stopped;
+  };
+  let lastProgressTime = 0;
+
+  // Try to fill with the given free set; every attempt uses filteredBankWords
+  // (banned words removed, grid words injected).
+  const tryFill = async (freeSet: Set<number>): Promise<FillResult | null> => {
+    const pinnedCells = revisionBuildPinnedCells(solvedGrid, slots, freeSet);
+    const engine = createFillEngine({
+      size, blacks,
+      wordsByLength: filteredWords,
+      bankWords: filteredBankWords,
+      seed, timeoutMs, alphabet,
+    });
+    if (pinnedCells.size > 0 && !engine.setPlacedLetters(pinnedCells)) return null;
+    if (!engine.deduplicateAfterPinning()) return null;
+    while (!engine.step(stepSize)) {
+      if (checkStop()) return null;
+      if (onProgress) {
+        const now = Date.now();
+        if (now - lastProgressTime >= progressIntervalMs) {
+          onProgress(engine.getProgressUpdate());
+          lastProgressTime = now;
+        }
+      }
+      if (yieldBetweenSteps) await new Promise<void>(resolve => setTimeout(resolve, 0));
+    }
+    const result = engine.getResult();
+    return result.success ? result : null;
+  };
 
   const crossingMap = new Map<number, Set<number>>();
   for (const slot of slots) {
@@ -1084,8 +1124,9 @@ export function runRevisionFill(config: RevisionFillConfig): FillResult | null {
   let frontier = new Set(removedIds);
 
   while (true) {
-    const result = revisionTryFill(freeSet, filteredWords, slots, solvedGrid, blacks, filteredBankWords, seed, timeoutMs, alphabet);
+    const result = await tryFill(freeSet);
     if (result) return result;
+    if (checkStop()) return null;
 
     const ring: number[] = [];
     frontier.forEach(slotId => {
@@ -1109,8 +1150,9 @@ export function runRevisionFill(config: RevisionFillConfig): FillResult | null {
     for (const slotId of ring) {
       freeSet.add(slotId);
       frontier.add(slotId);
-      const r = revisionTryFill(freeSet, filteredWords, slots, solvedGrid, blacks, bankWords, seed, timeoutMs, alphabet);
+      const r = await tryFill(freeSet);
       if (r) return r;
+      if (checkStop()) return null;
     }
   }
 }

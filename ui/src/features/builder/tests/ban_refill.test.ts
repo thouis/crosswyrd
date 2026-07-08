@@ -84,7 +84,7 @@ describe('ban MORRO and refill', () => {
     expect(['m','o','r','r','o'].every((ch, i) => solvedGrid[0][11 + i] === ch)).toBe(true);
   });
 
-  it('revision fill removes MORRO and changes fewer than 10 words', () => {
+  it('revision fill removes MORRO and changes fewer than 10 words', async () => {
     const { slots } = buildSlotTopology(size, blacks);
 
     // Find the MORRO slot (across at row 0, starting col 11, length 5)
@@ -102,7 +102,7 @@ describe('ban MORRO and refill', () => {
     // Pass all puzzle words (minus morro) as bank words so proper nouns are preserved
     const puzzleWords = extractPuzzleWords(solvedGrid, blacks).filter(w => w !== 'morro');
 
-    const result = runRevisionFill({
+    const result = await runRevisionFill({
       solvedGrid,
       blacks,
       wordsByLength,
@@ -133,7 +133,7 @@ describe('ban MORRO and refill', () => {
     expect(changedCount).toBeLessThan(10);
   });
 
-  it('ban MORRO + lock RESPECT: <10 words change and RESPECT preserved across 5 seeds', () => {
+  it('ban MORRO + lock RESPECT: <10 words change and RESPECT preserved across 5 seeds', async () => {
     const { slots } = buildSlotTopology(size, blacks);
 
     // MORRO: across, row 0, cols 11-15
@@ -159,7 +159,7 @@ describe('ban MORRO and refill', () => {
     const respectKey = `${respectSlot!.id}`;
 
     for (let seed = 1; seed <= 5; seed++) {
-      const result = runRevisionFill({
+      const result = await runRevisionFill({
         solvedGrid,
         blacks,
         wordsByLength,

@@ -21,7 +21,7 @@ import {
   createFillEngine,
   propagateConstraints,
   validateSolvedGrid,
-  buildSlotTopology,
+  runRevisionFill,
 } from './fillEngine';
 
 // ---------------------------------------------------------------------------
@@ -29,7 +29,6 @@ import {
 // ---------------------------------------------------------------------------
 
 const DEBUG_WAVES = false;
-const PROGRESS_INTERVAL_MS = 100;
 
 // ---------------------------------------------------------------------------
 // Module state
@@ -392,8 +391,6 @@ const WFCWorkerAPI: WFCWorkerAPIType = {
     if (!workerWordIndex) await indexReady;
 
     stopFillRequested = false;
-    const size = blacks.length;
-    const isStop = () => stopFillRequested;
 
     const bankSet = new Set(fillBankWords);
     const validation = validateSolvedGrid(
@@ -402,190 +399,48 @@ const WFCWorkerAPI: WFCWorkerAPIType = {
       bankSet, true, workerAlphabet
     );
     if (!validation.valid) {
-      // Extract unknown-word errors so the UI can prompt the user to add them to the bank.
-      const unknownWords: string[] = [];
-      for (const err of validation.errors) {
-        const m = err.match(/"([^"]+)" not in dictionary or bank/);
-        if (m) unknownWords.push(m[1]);
-      }
-      if (unknownWords.length > 0) {
-        try { onProgress({ done: true, success: false, failureReason: 'unknownWords', unknownWords }); } catch (_e) {}
+      if (validation.unknownWords.length > 0) {
+        // Report unknown words so the UI can prompt the user to add them to the bank.
+        try { onProgress({ done: true, success: false, failureReason: 'unknownWords', unknownWords: validation.unknownWords }); } catch (_e) {}
       } else {
         try { onProgress({ done: true, success: false, failureReason: 'contradiction' }); } catch (_e) {}
       }
       return;
     }
 
-    const { slots } = buildSlotTopology(size, blacks);
-    const crossingMap = new Map<number, Set<number>>();
-    for (const slot of slots) {
-      const s = new Set<number>();
-      for (const c of slot.crossings) { if (c) s.add(c.slotId); }
-      crossingMap.set(slot.id, s);
-    }
-
-    const filtered = revisionFilterBannedWords(indexToWordsByLength(workerWordIndex!), bannedWords);
-
-    const removedIds = removedSlotCells
-      .map(cells => revisionFindSlotId(slots, cells))
-      .filter(id => id !== -1);
-    if (removedIds.length === 0) return;
-
-    const lockedIds = new Set(
-      lockedSlotCells
-        .map(cells => revisionFindSlotId(slots, cells))
-        .filter(id => id !== -1)
+    const result = await runRevisionFill(
+      {
+        solvedGrid,
+        blacks,
+        wordsByLength: indexToWordsByLength(workerWordIndex!),
+        bannedWords,
+        removedSlotCells,
+        lockedSlotCells,
+        bankWords: fillBankWords,
+        seed,
+        timeoutMs: Infinity,
+        alphabet: workerAlphabet,
+      },
+      {
+        onProgress: (u) => {
+          try {
+            onProgress({ done: false, wave: masksToWave(u.cellMasksLo, u.cellMasksHi, blacks) });
+          } catch (_e) {}
+        },
+        isStop: () => stopFillRequested,
+        stepSize: 500,
+        yieldBetweenSteps: true,
+      }
     );
 
-    const freeSet = new Set(removedIds);
-    const visited = new Set(removedIds);
-    let frontier = new Set(removedIds);
-
-    while (!isStop()) {
-      const success = await revisionTryFill(
-        freeSet, filtered, slots, solvedGrid, blacks, size, fillBankWords, seed, onProgress, isStop
-      );
-      if (success || isStop()) return;
-
-      const ring: number[] = [];
-      Array.from(frontier).forEach(slotId => {
-        Array.from(crossingMap.get(slotId) ?? []).forEach(crossId => {
-          if (!visited.has(crossId) && !lockedIds.has(crossId)) {
-            ring.push(crossId);
-            visited.add(crossId);
-          }
-        });
-      });
-
-      if (ring.length === 0) {
-        try { onProgress({ done: true, success: false, failureReason: 'noValidFill' }); } catch (_e) {}
-        return;
-      }
-
-      const pinnedForSort = revisionBuildPinnedCells(solvedGrid, slots, freeSet);
-      ring.sort((a, b) =>
-        revisionCompatibleWordCount(slots[a], pinnedForSort, filtered) -
-        revisionCompatibleWordCount(slots[b], pinnedForSort, filtered)
-      );
-
-      frontier = new Set<number>();
-      for (const slotId of ring) {
-        if (isStop()) return;
-        freeSet.add(slotId);
-        frontier.add(slotId);
-        const r = await revisionTryFill(
-          freeSet, filtered, slots, solvedGrid, blacks, size, fillBankWords, seed, onProgress, isStop
-        );
-        if (r) return;
-      }
+    if (stopFillRequested) return;
+    if (result) {
+      try { onProgress({ done: true, success: true, grid: result.grid }); } catch (_e) {}
+    } else {
+      try { onProgress({ done: true, success: false, failureReason: 'noValidFill' }); } catch (_e) {}
     }
   },
 };
-
-// ---------------------------------------------------------------------------
-// Revision fill helpers
-// ---------------------------------------------------------------------------
-
-type SlotInfo = { id: number; cells: Array<{ row: number; col: number }>; crossings: Array<{ slotId: number } | null>; len: number; direction: 'across' | 'down' };
-
-function revisionFilterBannedWords(wordsByLength: Map<number, string[]>, bannedWords: string[]): Map<number, string[]> {
-  const bannedSet = new Set(bannedWords);
-  const out = new Map<number, string[]>();
-  wordsByLength.forEach((words, len) => {
-    out.set(len, words.filter(w => !bannedSet.has(w)));
-  });
-  return out;
-}
-
-function revisionFindSlotId(slots: SlotInfo[], cells: Array<{ row: number; col: number }>): number {
-  const key = (c: { row: number; col: number }) => `${c.row},${c.col}`;
-  const targetKeys = new Set(cells.map(key));
-  for (const slot of slots) {
-    if (slot.cells.length === cells.length && slot.cells.every(c => targetKeys.has(key(c)))) return slot.id;
-  }
-  const first = cells[0];
-  for (const slot of slots) {
-    if (slot.cells.length === cells.length && slot.cells[0].row === first.row && slot.cells[0].col === first.col) return slot.id;
-  }
-  return -1;
-}
-
-function revisionBuildPinnedCells(
-  solvedGrid: string[][],
-  slots: SlotInfo[],
-  freeSet: Set<number>
-): Map<string, string> {
-  const pinned = new Map<string, string>();
-  for (const slot of slots) {
-    if (freeSet.has(slot.id)) continue;
-    for (const { row, col } of slot.cells) {
-      pinned.set(`${row},${col}`, solvedGrid[row][col]);
-    }
-  }
-  return pinned;
-}
-
-function revisionCompatibleWordCount(
-  slot: SlotInfo,
-  pinnedCells: Map<string, string>,
-  wordsByLength: Map<number, string[]>
-): number {
-  const words = wordsByLength.get(slot.cells.length) ?? [];
-  return words.filter(w =>
-    slot.cells.every(({ row, col }, i) => {
-      const pin = pinnedCells.get(`${row},${col}`);
-      return pin === undefined || w[i] === pin;
-    })
-  ).length;
-}
-
-async function revisionTryFill(
-  freeSet: Set<number>,
-  filteredWords: Map<number, string[]>,
-  slots: SlotInfo[],
-  solvedGrid: string[][],
-  blacks: boolean[][],
-  size: number,
-  fillBankWords: string[],
-  seed: number,
-  onProgress: (update: FillWaveUpdate) => void,
-  isStop: () => boolean
-): Promise<boolean> {
-  const pinnedCells = revisionBuildPinnedCells(solvedGrid, slots, freeSet);
-  const engine = createFillEngine({
-    size,
-    blacks,
-    wordsByLength: filteredWords,
-    bankWords: fillBankWords,
-    seed,
-    timeoutMs: Infinity,
-    alphabet: workerAlphabet,
-  });
-  if (pinnedCells.size > 0 && !engine.setPlacedLetters(pinnedCells)) return false;
-  if (!engine.deduplicateAfterPinning()) return false;
-  let lastProgressTime = 0;
-  while (!isStop()) {
-    const done = engine.step(500);
-    const now = Date.now();
-    if (done || now - lastProgressTime >= PROGRESS_INTERVAL_MS) {
-      const u = engine.getProgressUpdate();
-      if (done) {
-        const result = engine.getResult();
-        try {
-          onProgress(result.success
-            ? { done: true, success: true, grid: result.grid }
-            : { done: true, success: false, failureReason: result.failureReason ?? 'noValidFill' });
-        } catch (_e) {}
-      } else {
-        try { onProgress({ done: false, wave: masksToWave(u.cellMasksLo, u.cellMasksHi, blacks) }); } catch (_e) {}
-        lastProgressTime = now;
-      }
-    }
-    if (done) return engine.getResult().success;
-    await new Promise<void>(resolve => setTimeout(resolve, 0));
-  }
-  return false;
-}
 
 expose(WFCWorkerAPI);
 
