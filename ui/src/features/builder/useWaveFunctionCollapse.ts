@@ -7,6 +7,7 @@ import {
   bumpPuzzleVersion,
   CrosswordPuzzleType,
   LetterType,
+  selectBannedWords,
   selectFillAssistActive,
   selectWave,
   setWaveState as reduxSetWaveState,
@@ -191,6 +192,7 @@ export default function useWaveFunctionCollapse(
 
   const wave = useSelector(selectWave);
   const fillAssistActive = useSelector(selectFillAssistActive);
+  const bannedWords = useSelector(selectBannedWords);
   const dispatch = useDispatch();
 
   // Ingest puzzle into wave
@@ -250,7 +252,7 @@ export default function useWaveFunctionCollapse(
             wave,
             puzzle,
             tileUpdates,
-            []
+            bannedWords
           )
         : waveFromPuzzleWithLettersCollapsed(puzzle);
       const newWaveWithVersion = {
@@ -264,7 +266,7 @@ export default function useWaveFunctionCollapse(
 
       return newWaveWithVersion;
     },
-    [dispatch, puzzle, wave, fillAssistActive]
+    [dispatch, puzzle, wave, fillAssistActive, bannedWords]
   );
 
   const previousPuzzle = useRef<CrosswordPuzzleType | null>(puzzle);

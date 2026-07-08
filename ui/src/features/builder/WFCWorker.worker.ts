@@ -211,6 +211,7 @@ export interface WFCWorkerAPIType {
     blacks: boolean[][],
     placedLetters: Array<{ row: number; col: number; letter: string }>,
     bankWordsIn: string[],
+    bannedWords: string[],
     seed: number,
     onProgress: (update: FillWaveUpdate) => void
   ) => Promise<void>;
@@ -290,21 +291,27 @@ const WFCWorkerAPI: WFCWorkerAPIType = {
     blacks: boolean[][],
     placedLetters: Array<{ row: number; col: number; letter: string }>,
     bankWordsIn: string[],
+    bannedWords: string[],
     seed: number,
     onProgress: (update: FillWaveUpdate) => void
   ): Promise<void> => {
     if (!workerWordIndex) await indexReady;
     stopFillRequested = false;
     const size = blacks.length;
-    const wordsByLength = workerWordIndex
-      ? indexToWordsByLength(workerWordIndex)
-      : new Map<number, string[]>();
+    const wordsByLength = filterBannedWords(
+      workerWordIndex
+        ? indexToWordsByLength(workerWordIndex)
+        : new Map<number, string[]>(),
+      bannedWords
+    );
+    const bannedSet = new Set(bannedWords);
+    const filteredBankWords = bankWordsIn.filter(w => !bannedSet.has(w));
 
     const engine: FillEngineInstance = createFillEngine({
       size,
       blacks,
       wordsByLength,
-      bankWords: bankWordsIn,
+      bankWords: filteredBankWords,
       seed,
       timeoutMs: Infinity,
       alphabet: workerAlphabet,

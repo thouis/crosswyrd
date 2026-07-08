@@ -6,7 +6,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { PuzCrossword } from '@confuzzle/puz-crossword';
-import { runRevisionFill, buildSlotTopology } from '../fillEngine';
+import { createFillEngine, runRevisionFill, buildSlotTopology } from '../fillEngine';
 import { groupWordsByLength } from '../wordIndex';
 
 jest.setTimeout(60000);
@@ -190,5 +190,56 @@ describe('ban MORRO and refill', () => {
       console.log(`Seed ${seed}: Words changed: ${changedCount} / ${originalWords.size}`);
       expect(changedCount).toBeLessThan(10);
     }
+  });
+
+  // Fresh-fill path (mirrors WFCWorker.startFill): banned words must be
+  // filtered from both the word list and the bank before engine construction,
+  // so a banned word cannot re-enter the grid via a fresh Auto-Fill.
+  it('fresh fill excludes a banned bank word that would otherwise be chosen', () => {
+    // Pin 'morr' at row 0, cols 11-14 so the 5-letter across slot can only be
+    // 'morro' (a bank word, tried first) or 'morra' (dictionary).
+    const placedLetters = new Map<string, string>([
+      ['0,11', 'm'],
+      ['0,12', 'o'],
+      ['0,13', 'r'],
+      ['0,14', 'r'],
+    ]);
+
+    const runFreshFill = (bannedWords: string[]): string[][] | null => {
+      // Same filtering startFill now applies
+      const bannedSet = new Set(bannedWords);
+      const filteredWordsByLength = new Map<number, string[]>();
+      wordsByLength.forEach((ws, len) => {
+        filteredWordsByLength.set(
+          len,
+          bannedWords.length === 0 ? ws.slice() : ws.filter(w => !bannedSet.has(w))
+        );
+      });
+      const bankWords = ['morro'].filter(w => !bannedSet.has(w));
+
+      const engine = createFillEngine({
+        size,
+        blacks,
+        wordsByLength: filteredWordsByLength,
+        bankWords,
+        seed: 42,
+        timeoutMs: 30000,
+      });
+      if (!engine.setPlacedLetters(placedLetters)) return null;
+      let done = false;
+      for (let i = 0; i < 500000 && !done; i++) done = engine.step(50);
+      const result = engine.getResult();
+      return result.success ? result.grid : null;
+    };
+
+    // Control: morro is a bank word (tried before dictionary words) → chosen
+    const unbannedGrid = runFreshFill([]);
+    expect(unbannedGrid).not.toBeNull();
+    expect(extractPuzzleWords(unbannedGrid!, blacks)).toContain('morro');
+
+    // With morro banned, it must not appear anywhere in the fill
+    const bannedGrid = runFreshFill(['morro']);
+    expect(bannedGrid).not.toBeNull();
+    expect(extractPuzzleWords(bannedGrid!, blacks)).not.toContain('morro');
   });
 });
