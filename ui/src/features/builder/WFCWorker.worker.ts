@@ -11,6 +11,7 @@ import {
   TileUpdateType,
   WaveType,
 } from './useWaveFunctionCollapse';
+import { waveWithUnfillableUpdates } from './waveUtils';
 import {
   WordIndexType,
   buildWordIndex,
@@ -113,12 +114,14 @@ function extractPuzzleState(puzzle: CrosswordPuzzleType): {
   return { size, blacks, placedLetters };
 }
 
-// Compute wave from puzzle via propagateConstraints
+// Compute wave from puzzle via propagateConstraints. On contradiction the
+// engine aborts propagation mid-queue, so the returned options are only
+// meaningful when `contradiction` is false.
 function computeWaveFromPuzzle(
   puzzle: CrosswordPuzzleType,
   baseWave: WaveType,
   bannedWords: string[] = []
-): WaveType {
+): { wave: WaveType; contradiction: boolean } {
   const { size, blacks, placedLetters } = extractPuzzleState(puzzle);
   const wordsByLength = workerWordIndex
     ? indexToWordsByLength(workerWordIndex)
@@ -148,7 +151,10 @@ function computeWaveFromPuzzle(
     }
     elements.push(row);
   }
-  return { elements, puzzleVersion: puzzle.version };
+  return {
+    wave: { elements, puzzleVersion: puzzle.version },
+    contradiction: result.contradiction,
+  };
 }
 
 function masksToWave(
@@ -260,7 +266,13 @@ const WFCWorkerAPI: WFCWorkerAPIType = {
     _.forEach(tileUpdates, ({ row, column, value }) => {
       puzzleCopy.tiles[row][column].value = value;
     });
-    const updated = computeWaveFromPuzzle(puzzleCopy, wave, bannedWordsIn);
+    const { wave: updated, contradiction } = computeWaveFromPuzzle(puzzleCopy, wave, bannedWordsIn);
+    if (contradiction) {
+      // Don't render half-propagated masks — they offer meaningless "next
+      // letters". Keep the previous consistent wave and mark only the updated
+      // letter tiles unfillable (options = [] renders red).
+      return waveWithUnfillableUpdates(wave, tileUpdates, puzzle.version);
+    }
     updated.puzzleVersion = puzzle.version;
     recoverTiles(updated, wave);
     return updated;
