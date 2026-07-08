@@ -1,3 +1,4 @@
+import { Remote } from 'comlink';
 import _ from 'lodash';
 import {
   Box,
@@ -23,6 +24,7 @@ import useWordViabilities, {
   ViabilityStateType,
   WordViabilitiesType,
 } from './useWordViabilities';
+import { WFCWorkerAPIType } from './WFCWorker.worker';
 
 function WordEntry({
   data: { possibleWords, wordViabilities, mkHandleClickWord },
@@ -81,6 +83,7 @@ interface Props {
   clearSelection: () => void;
   autoFillRunning: boolean;
   fillAssistActive: boolean;
+  WFCWorkerRef: React.MutableRefObject<Remote<WFCWorkerAPIType> | null>;
 }
 
 function WordSelector({
@@ -93,6 +96,7 @@ function WordSelector({
   clearSelection,
   autoFillRunning,
   fillAssistActive,
+  WFCWorkerRef,
 }: Props) {
   const selectedTiles = useMemo(
     () =>
@@ -139,7 +143,8 @@ function WordSelector({
     possibleWords,
     selectedTilesState,
     autoFillRunning,
-    fillAssistActive
+    fillAssistActive,
+    WFCWorkerRef
   );
 
   const mkHandleClickWord = (index: number) => () => {

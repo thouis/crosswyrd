@@ -491,6 +491,7 @@ export default function CrosswordBuilder({ grid }: Props) {
                     clearSelection={clearSelection}
                     autoFillRunning={autoFillRunning}
                     fillAssistActive={fillAssistActive}
+                    WFCWorkerRef={WFCWorkerRef}
                   />
                 }
                 wordBank={

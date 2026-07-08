@@ -1,14 +1,19 @@
-import { Remote, wrap } from 'comlink';
+import { Remote } from 'comlink';
 import _ from 'lodash';
-import { useEffect, useReducer, useRef } from 'react';
+import { MutableRefObject, useEffect, useReducer, useRef } from 'react';
+import { useSelector } from 'react-redux';
 
 import { useInterval } from '../../app/util';
-import { CrosswordPuzzleType, LetterType } from './builderSlice';
+import {
+  CrosswordPuzzleType,
+  LetterType,
+  selectBannedWords,
+} from './builderSlice';
 import { LocationType, puzzleCannotBeFilled } from './CrosswordBuilder';
 import { DictionaryType } from './useDictionary';
 import { SelectedTilesStateType } from './useTileSelection';
 import { WaveType } from './useWaveFunctionCollapse';
-import WFCWorker, { WFCWorkerAPIType } from './WFCWorker.worker';
+import { WFCWorkerAPIType } from './WFCWorker.worker';
 
 const VIABILITY_CHECK_LIMIT = 20;
 
@@ -61,15 +66,11 @@ export default function useWordViabilities(
   words: string[],
   selectedTilesState: SelectedTilesStateType | null,
   autoFillRunning: boolean,
-  fillAssistActive: boolean
+  fillAssistActive: boolean,
+  WFCWorkerRef: MutableRefObject<Remote<WFCWorkerAPIType> | null>
 ): WordViabilitiesType {
   const [wordViabilities, dispatch] = useReducer(wordViabilitiesReducer, {});
-
-  // Instantiate WFCWorker
-  const WFCWorkerRef = useRef<Remote<WFCWorkerAPIType> | null>(null);
-  useEffect(() => {
-    WFCWorkerRef.current = wrap<Remote<WFCWorkerAPIType>>(new WFCWorker());
-  }, []);
+  const bannedWords = useSelector(selectBannedWords);
 
   // Erase word viabilities if the puzzle version or selection changes or if
   // fill assist is not active
@@ -118,7 +119,7 @@ export default function useWordViabilities(
             column,
             value: word[index] as LetterType,
           })),
-          []
+          bannedWords
         );
 
         if (

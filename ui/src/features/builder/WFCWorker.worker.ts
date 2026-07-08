@@ -37,7 +37,11 @@ const DEBUG_WAVES = false;
 let workerAlphabet: Alphabet = ENGLISH;
 let workerWordIndex: WordIndexType | null = null;
 let baseWordList: string[] = [];
+// All user bank words (retained across index rebuilds so they can be re-added).
 const bankWords = new Set<string>();
+// Bank words that were actually inserted into the index (i.e., not already
+// present as dictionary words). Only these may be spliced out on removal.
+const insertedBankWords = new Set<string>();
 let stopFillRequested = false;
 
 const indexReady: Promise<void> = fetch(`${process.env.PUBLIC_URL}/word_list.json`)
@@ -50,6 +54,19 @@ const indexReady: Promise<void> = fetch(`${process.env.PUBLIC_URL}/word_list.jso
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// Re-add retained bank words after an index rebuild, refreshing the
+// inserted-word bookkeeping.
+function readdBankWords(): void {
+  insertedBankWords.clear();
+  if (!workerWordIndex || bankWords.size === 0) return;
+  const inserted = addWordsToWordIndex(
+    workerWordIndex,
+    Array.from(bankWords),
+    workerAlphabet
+  );
+  for (const w of inserted) insertedBankWords.add(w);
+}
 
 function indexToWordsByLength(index: WordIndexType): Map<number, string[]> {
   const m = new Map<number, string[]>();
@@ -188,8 +205,8 @@ export interface WFCWorkerAPIType {
     tileUpdates: TileUpdateType[],
     bannedWords?: string[]
   ) => Promise<WaveType>;
-  addWordsToIndex: (words: string[]) => void;
-  removeWordsFromIndex: (words: string[]) => void;
+  addWordsToIndex: (words: string[]) => Promise<void>;
+  removeWordsFromIndex: (words: string[]) => Promise<void>;
   startFill: (
     blacks: boolean[][],
     placedLetters: Array<{ row: number; col: number; letter: string }>,
@@ -219,13 +236,16 @@ const WFCWorkerAPI: WFCWorkerAPIType = {
   resetIndex: async () => {
     if (!workerWordIndex) await indexReady;
     workerWordIndex = buildWordIndex(baseWordList, workerAlphabet);
-    bankWords.clear();
+    // Retain and re-add the bank words so the user's bank keeps being honored
+    // after a reset.
+    readdBankWords();
   },
 
   setAlphabet: (letters: string[]) => {
     workerAlphabet = new Alphabet(letters);
     if (baseWordList.length > 0) {
       workerWordIndex = buildWordIndex(baseWordList, workerAlphabet);
+      readdBankWords();
     }
   },
 
@@ -246,18 +266,24 @@ const WFCWorkerAPI: WFCWorkerAPIType = {
     return updated;
   },
 
-  addWordsToIndex: (words: string[]) => {
-    if (!workerWordIndex) return;
+  addWordsToIndex: async (words: string[]) => {
+    // Await the word-list fetch instead of early-returning so bank words sent
+    // before the fetch resolves are not silently dropped.
+    if (!workerWordIndex) await indexReady;
     for (const w of words) bankWords.add(w);
-    addWordsToWordIndex(workerWordIndex, words, workerAlphabet);
+    const inserted = addWordsToWordIndex(workerWordIndex!, words, workerAlphabet);
+    for (const w of inserted) insertedBankWords.add(w);
   },
 
-  removeWordsFromIndex: (words: string[]) => {
-    if (!workerWordIndex) return;
+  removeWordsFromIndex: async (words: string[]) => {
+    if (!workerWordIndex) await indexReady;
     for (const w of words) {
-      if (!bankWords.has(w)) continue;
       bankWords.delete(w);
-      const ws = workerWordIndex.words[w.length];
+      // Only splice words we actually inserted--a bank word that duplicated a
+      // dictionary word must not delete the dictionary entry.
+      if (!insertedBankWords.has(w)) continue;
+      insertedBankWords.delete(w);
+      const ws = workerWordIndex!.words[w.length];
       if (!ws) continue;
       const idx = ws.indexOf(w);
       if (idx !== -1) ws.splice(idx, 1);

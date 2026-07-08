@@ -49,8 +49,11 @@ export function groupWordsByLength(words: string[], alphabet: Alphabet = ENGLISH
 // Incremental update — append new words (e.g. word bank) without full rebuild
 // ---------------------------------------------------------------------------
 
-export function addWords(index: WordIndexType, newWords: string[], alphabet: Alphabet = ENGLISH): void {
+// Returns the list of words actually inserted (duplicates and words with
+// out-of-alphabet characters are excluded).
+export function addWords(index: WordIndexType, newWords: string[], alphabet: Alphabet = ENGLISH): string[] {
   const alphaSet = new Set(alphabet.letters);
+  const inserted: string[] = [];
 
   for (const word of newWords) {
     let valid = true;
@@ -60,6 +63,7 @@ export function addWords(index: WordIndexType, newWords: string[], alphabet: Alp
 
     if (!index.words[len]) {
       index.words[len] = [word];
+      inserted.push(word);
       continue;
     }
 
@@ -67,5 +71,8 @@ export function addWords(index: WordIndexType, newWords: string[], alphabet: Alp
     if (ws.includes(word)) continue; // skip duplicate
 
     ws.push(word);
+    inserted.push(word);
   }
+
+  return inserted;
 }
