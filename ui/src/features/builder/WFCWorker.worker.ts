@@ -269,9 +269,10 @@ const WFCWorkerAPI: WFCWorkerAPIType = {
     const { wave: updated, contradiction } = computeWaveFromPuzzle(puzzleCopy, wave, bannedWordsIn);
     if (contradiction) {
       // Don't render half-propagated masks — they offer meaningless "next
-      // letters". Keep the previous consistent wave and mark only the updated
-      // letter tiles unfillable (options = [] renders red).
-      return waveWithUnfillableUpdates(wave, tileUpdates, puzzle.version);
+      // letters". Keep the previous consistent wave; mark the updated letter
+      // tiles and the still-empty tiles in their slots unfillable
+      // (options = [] renders red).
+      return waveWithUnfillableUpdates(wave, tileUpdates, puzzleCopy, puzzle.version);
     }
     updated.puzzleVersion = puzzle.version;
     recoverTiles(updated, wave);
