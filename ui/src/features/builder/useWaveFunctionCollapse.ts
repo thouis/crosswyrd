@@ -162,7 +162,6 @@ type UpdateWaveReturnType = {
 interface ReturnType {
   wave: WaveType | null;
   updateWaveWithTileUpdates: (
-    dictionary: DictionaryType,
     tileUpdates: TileUpdateType[],
     newPuzzleVersion?: string
   ) => Promise<WaveType | null>;
@@ -236,7 +235,6 @@ export default function useWaveFunctionCollapse(
 
   const updateWaveWithTileUpdates = useCallback(
     async (
-      dictionary: DictionaryType,
       tileUpdates: TileUpdateType[],
       newPuzzleVersion?: string
     ): Promise<WaveType | null> => {
@@ -306,14 +304,12 @@ export default function useWaveFunctionCollapse(
       // hasn't been seen before and the word is full-length (i.e., it's not a
       // word fragment, which we wouldn't want in the dictionary)
       const newWords = wordsNotInDictionary(puzzle, wave, dictionary);
-      if (newWords.length > 0) WFCWorkerRef.current?.addWordsToIndex(newWords);
-      const possiblyUpdatedDictionary =
-        (newWords.length > 0 && addWordsToDictionary(newWords)) || dictionary;
+      if (newWords.length > 0) {
+        WFCWorkerRef.current?.addWordsToIndex(newWords);
+        addWordsToDictionary(newWords);
+      }
 
-      const newWave = await updateWaveWithTileUpdates(
-        possiblyUpdatedDictionary,
-        tileUpdates
-      );
+      const newWave = await updateWaveWithTileUpdates(tileUpdates);
       return (
         newWave && {
           puzzle,

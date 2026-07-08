@@ -26,13 +26,7 @@ export default function useDictionary(): {
   const addWordsToDictionary = useCallback(
     (newWords: string[]) => {
       if (!dictionary) return null;
-      const newDictionary = _.mapValues(dictionary, (existingWords) =>
-        _.flow((newWordsOfLength) =>
-          newWordsOfLength.length > 0
-            ? _.sortBy([...existingWords, ...newWordsOfLength])
-            : existingWords
-        )(_.filter(newWords, ['length', existingWords[0].length]))
-      );
+      const newDictionary = mergeWordsIntoDictionary(dictionary, newWords);
       setDictionary(newDictionary);
       return newDictionary;
     },
@@ -40,6 +34,21 @@ export default function useDictionary(): {
   );
 
   return { dictionary, addWordsToDictionary };
+}
+
+export function mergeWordsIntoDictionary(
+  dictionary: DictionaryType,
+  newWords: string[]
+): DictionaryType {
+  const grouped = _.groupBy(newWords, 'length');
+  const newDictionary: DictionaryType = { ...dictionary };
+  _.forEach(grouped, (wordsOfLength, len) => {
+    newDictionary[len] = _.sortBy([
+      ...(dictionary[len] ?? []),
+      ...wordsOfLength,
+    ]);
+  });
+  return newDictionary;
 }
 export function inDictionary(
   dictionary: DictionaryType,

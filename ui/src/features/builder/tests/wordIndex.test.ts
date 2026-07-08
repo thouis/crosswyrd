@@ -33,58 +33,18 @@ test('uses ENGLISH by default when alphabet omitted', () => {
   expect(idx.words[3]).toEqual(['cat']);
 });
 
-// ---------------------------------------------------------------------------
-// buildWordIndex — stride
-// ---------------------------------------------------------------------------
-
-test('stride is 1 for ≤32 words of same length', () => {
-  const words = Array.from({ length: 32 }, (_, i) => 'a' + String.fromCharCode(97 + (i % 25)) + 'a');
-  // deduplicate
-  const unique = [...new Set(words)].slice(0, 10);
-  const idx = buildWordIndex(unique, ENGLISH);
-  expect(idx.stride[3]).toBe(1);
-});
-
-test('stride is 2 for 33 words of same length', () => {
-  // build 33 distinct 5-letter words from 'aaaaa' variant permutations
+test('buildWordIndex handles more than 32 words of one length', () => {
+  // build 33 distinct 5-letter words
   const words: string[] = [];
-  outer: for (let i = 0; i < 26 && words.length < 33; i++) {
+  for (let i = 0; i < 26 && words.length < 33; i++) {
     for (let j = 0; j < 26 && words.length < 33; j++) {
       words.push('a' + String.fromCharCode(97 + i) + String.fromCharCode(97 + j) + 'aa');
     }
   }
   expect(words.length).toBe(33);
   const idx = buildWordIndex(words, ENGLISH);
-  expect(idx.stride[5]).toBe(2);
-});
-
-// ---------------------------------------------------------------------------
-// buildWordIndex — bitset correctness
-// ---------------------------------------------------------------------------
-
-test('bitset bit set for correct word at correct position', () => {
-  // sorted: ['act', 'cat'] → act=index 0, cat=index 1
-  const idx = buildWordIndex(['cat', 'act'], ENGLISH);
-
-  const aIdx = ENGLISH.letterIndex('a');
-  const cIdx = ENGLISH.letterIndex('c');
-
-  // position 0: 'act' has 'a', 'cat' has 'c'
-  expect(idx.bitsets[3][0][aIdx][0] & (1 << 0)).toBeTruthy(); // act at bit 0
-  expect(idx.bitsets[3][0][cIdx][0] & (1 << 1)).toBeTruthy(); // cat at bit 1
-
-  // position 1: both have different letters
-  const cIdxAct = ENGLISH.letterIndex('c'); // act[1]='c'
-  const aIdxCat = ENGLISH.letterIndex('a'); // cat[1]='a'
-  expect(idx.bitsets[3][1][cIdxAct][0] & (1 << 0)).toBeTruthy();
-  expect(idx.bitsets[3][1][aIdxCat][0] & (1 << 1)).toBeTruthy();
-});
-
-test('bitset bit NOT set for wrong letter at position', () => {
-  const idx = buildWordIndex(['cat', 'act'], ENGLISH);
-  const zIdx = ENGLISH.letterIndex('z');
-  // no word starts with 'z'
-  expect(idx.bitsets[3][0][zIdx][0]).toBe(0);
+  expect(idx.words[5]).toHaveLength(33);
+  expect(idx.words[5]).toEqual([...words].sort());
 });
 
 // ---------------------------------------------------------------------------
@@ -95,7 +55,6 @@ test('addWords creates new length group', () => {
   const idx = buildWordIndex(['cat'], ENGLISH);
   addWords(idx, ['fish'], ENGLISH);
   expect(idx.words[4]).toEqual(['fish']);
-  expect(idx.stride[4]).toBe(1);
 });
 
 // ---------------------------------------------------------------------------
@@ -110,15 +69,17 @@ test('addWords appends to existing group', () => {
   expect(idx.words[3]).toContain('act');
 });
 
-test('addWords sets bitset bit for new word', () => {
-  const idx = buildWordIndex(['cat', 'act'], ENGLISH);
-  addWords(idx, ['dot'], ENGLISH);
-  // 'dot' is appended at index 2 (after act=0, cat=1)
-  const wordIdx = idx.words[3].indexOf('dot');
-  const dIdx = ENGLISH.letterIndex('d');
-  const unit = wordIdx >>> 5;
-  const bit = 1 << (wordIdx & 31);
-  expect(idx.bitsets[3][0][dIdx][unit] & bit).toBeTruthy();
+test('addWords past the 32-word boundary keeps all words and dedups', () => {
+  const idx = buildWordIndex(['aaaaa'], ENGLISH);
+  const newWords: string[] = [];
+  for (let i = 0; i < 26 && newWords.length < 40; i++) {
+    for (let j = 0; j < 26 && newWords.length < 40; j++) {
+      newWords.push('b' + String.fromCharCode(97 + i) + String.fromCharCode(97 + j) + 'bb');
+    }
+  }
+  addWords(idx, [...newWords, ...newWords, 'aaaaa'], ENGLISH);
+  expect(idx.words[5]).toHaveLength(41);
+  for (const w of newWords) expect(idx.words[5]).toContain(w);
 });
 
 // ---------------------------------------------------------------------------

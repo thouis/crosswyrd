@@ -19,7 +19,6 @@ import {
   TileUpdateType,
   WaveType,
 } from './useWaveFunctionCollapse';
-import type { DictionaryType } from './useDictionary';
 import type { WFCWorkerAPIType } from './WFCWorker.worker';
 
 interface ReturnType {
@@ -35,7 +34,6 @@ export default function useAutoFill(
   pushStateHistory: (wap: WaveAndPuzzleType) => void,
   WFCWorkerRef: React.MutableRefObject<Remote<WFCWorkerAPIType> | null>,
   updateWaveWithTileUpdates: (
-    dictionary: DictionaryType,
     tileUpdates: TileUpdateType[],
     newPuzzleVersion?: string
   ) => Promise<WaveType | null>,
@@ -130,7 +128,9 @@ export default function useAutoFill(
       const curPuzzle = puzzleRef.current;
 
       if (!update.done) {
-        dispatch(setWaveState(update.wave));
+        dispatch(
+          setWaveState({ ...update.wave, puzzleVersion: curPuzzle.version })
+        );
         return;
       }
 
@@ -148,7 +148,7 @@ export default function useAutoFill(
         }
         if (tileUpdates.length > 0) {
           const newVersion = randomId();
-          updateWaveWithTileUpdates(null as unknown as DictionaryType, tileUpdates, newVersion).then((newWave) => {
+          updateWaveWithTileUpdates(tileUpdates, newVersion).then((newWave) => {
             if (newWave) {
               const newPuzzle = withPuzzleTileUpdates(curPuzzle, tileUpdates, newVersion);
               pushStateHistory({ wave: newWave, puzzle: newPuzzle });

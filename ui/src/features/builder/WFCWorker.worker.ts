@@ -73,23 +73,6 @@ function filterBannedWords(
   return out;
 }
 
-function rebuildBitsetForLength(index: WordIndexType, len: number): void {
-  const alphaSize = workerAlphabet.size;
-  const ws = index.words[len] ?? [];
-  const s = Math.max(1, Math.ceil(ws.length / 32));
-  index.stride[len] = s;
-  const pb: Uint32Array[][] = Array.from({ length: len }, () =>
-    Array.from({ length: alphaSize }, () => new Uint32Array(s))
-  );
-  for (let i = 0; i < ws.length; i++) {
-    const u = i >>> 5, b = 1 << (i & 31);
-    for (let p = 0; p < len; p++) {
-      pb[p][workerAlphabet.letterIndex(ws[i][p])][u] |= b;
-    }
-  }
-  index.bitsets[len] = pb;
-}
-
 // Extract blacks / placedLetters from puzzle
 function extractPuzzleState(puzzle: CrosswordPuzzleType): {
   size: number;
@@ -271,20 +254,14 @@ const WFCWorkerAPI: WFCWorkerAPIType = {
 
   removeWordsFromIndex: (words: string[]) => {
     if (!workerWordIndex) return;
-    const affectedLens = new Set<number>();
     for (const w of words) {
       if (!bankWords.has(w)) continue;
       bankWords.delete(w);
-      const len = w.length;
-      const ws = workerWordIndex.words[len];
+      const ws = workerWordIndex.words[w.length];
       if (!ws) continue;
       const idx = ws.indexOf(w);
-      if (idx !== -1) {
-        ws.splice(idx, 1);
-        affectedLens.add(len);
-      }
+      if (idx !== -1) ws.splice(idx, 1);
     }
-    affectedLens.forEach(len => rebuildBitsetForLength(workerWordIndex!, len));
   },
 
   startFill: async (
