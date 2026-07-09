@@ -54,7 +54,7 @@ export function useWordBankSync(
     const nextSet = new Set(wordBankWords);
     const added = wordBankWords.filter(w => !prevSet.has(w));
     const removed = prev.filter(w => !nextSet.has(w));
-    if (added.length > 0) workerRef.current.addWordsToIndex(added);
+    if (added.length > 0) workerRef.current.addWordsToIndex(added, 'bank');
     if (removed.length > 0) workerRef.current.removeWordsFromIndex(removed);
     prevBankWordsRef.current = wordBankWords;
   }, [wordBankWords]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -305,7 +305,9 @@ export default function useWaveFunctionCollapse(
       // word fragment, which we wouldn't want in the dictionary)
       const newWords = wordsNotInDictionary(puzzle, wave, dictionary);
       if (newWords.length > 0) {
-        WFCWorkerRef.current?.addWordsToIndex(newWords);
+        // Await so the index update is applied before withTileUpdates runs
+        // (previously relied on undocumented comlink FIFO ordering).
+        await WFCWorkerRef.current?.addWordsToIndex(newWords, 'grid');
         addWordsToDictionary(newWords);
       }
 

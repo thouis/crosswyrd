@@ -18,6 +18,14 @@ import {
   addWords as addWordsToWordIndex,
 } from './wordIndex';
 import {
+  WordSource,
+  createWordSourcePool,
+  recordAdd,
+  recordRemove,
+  wordsToRetainOnRebuild,
+  refreshInsertedAfterRebuild,
+} from './wordSourcePool';
+import {
   FillEngineInstance,
   createFillEngine,
   propagateConstraints,
@@ -38,11 +46,9 @@ const DEBUG_WAVES = false;
 let workerAlphabet: Alphabet = ENGLISH;
 let workerWordIndex: WordIndexType | null = null;
 let baseWordList: string[] = [];
-// All user bank words (retained across index rebuilds so they can be re-added).
-const bankWords = new Set<string>();
-// Bank words that were actually inserted into the index (i.e., not already
-// present as dictionary words). Only these may be spliced out on removal.
-const insertedBankWords = new Set<string>();
+// Tracks why each non-base word is in the index (word bank vs. grid-typed),
+// so removing a bank word never deletes a word still placed on the grid.
+const wordSourcePool = createWordSourcePool();
 let stopFillRequested = false;
 
 const indexReady: Promise<void> = fetch(`${process.env.PUBLIC_URL}/word_list.json`)
@@ -56,17 +62,18 @@ const indexReady: Promise<void> = fetch(`${process.env.PUBLIC_URL}/word_list.jso
 // Helpers
 // ---------------------------------------------------------------------------
 
-// Re-add retained bank words after an index rebuild, refreshing the
-// inserted-word bookkeeping.
+// Re-add bank-sourced words after an index rebuild (resetIndex/setAlphabet).
+// Grid-only words are dropped entirely--they'll be re-added by updateWave if
+// still present on the grid, but stale/removed grid words should not survive
+// a reset. Refreshes the inserted-word bookkeeping from the actual result.
 function readdBankWords(): void {
-  insertedBankWords.clear();
-  if (!workerWordIndex || bankWords.size === 0) return;
-  const inserted = addWordsToWordIndex(
-    workerWordIndex,
-    Array.from(bankWords),
-    workerAlphabet
-  );
-  for (const w of inserted) insertedBankWords.add(w);
+  const retained = wordsToRetainOnRebuild(wordSourcePool);
+  if (!workerWordIndex || retained.length === 0) {
+    refreshInsertedAfterRebuild(wordSourcePool, []);
+    return;
+  }
+  const inserted = addWordsToWordIndex(workerWordIndex, retained, workerAlphabet);
+  refreshInsertedAfterRebuild(wordSourcePool, inserted);
 }
 
 function indexToWordsByLength(index: WordIndexType): Map<number, string[]> {
@@ -211,7 +218,7 @@ export interface WFCWorkerAPIType {
     tileUpdates: TileUpdateType[],
     bannedWords?: string[]
   ) => Promise<WaveType>;
-  addWordsToIndex: (words: string[]) => Promise<void>;
+  addWordsToIndex: (words: string[], source?: WordSource) => Promise<void>;
   removeWordsFromIndex: (words: string[]) => Promise<void>;
   startFill: (
     blacks: boolean[][],
@@ -279,23 +286,22 @@ const WFCWorkerAPI: WFCWorkerAPIType = {
     return updated;
   },
 
-  addWordsToIndex: async (words: string[]) => {
+  addWordsToIndex: async (words: string[], source: WordSource = 'bank') => {
     // Await the word-list fetch instead of early-returning so bank words sent
     // before the fetch resolves are not silently dropped.
     if (!workerWordIndex) await indexReady;
-    for (const w of words) bankWords.add(w);
     const inserted = addWordsToWordIndex(workerWordIndex!, words, workerAlphabet);
-    for (const w of inserted) insertedBankWords.add(w);
+    recordAdd(wordSourcePool, words, source, inserted);
   },
 
+  // Called only by bank-sync on bank removal. Only drops the 'bank' source;
+  // a word still placed on the grid ('grid' source) is never spliced out,
+  // and a bank word that duplicated a base-dictionary word is never spliced
+  // out either (it was never actually inserted).
   removeWordsFromIndex: async (words: string[]) => {
     if (!workerWordIndex) await indexReady;
-    for (const w of words) {
-      bankWords.delete(w);
-      // Only splice words we actually inserted--a bank word that duplicated a
-      // dictionary word must not delete the dictionary entry.
-      if (!insertedBankWords.has(w)) continue;
-      insertedBankWords.delete(w);
+    const toSplice = recordRemove(wordSourcePool, words);
+    for (const w of toSplice) {
       const ws = workerWordIndex!.words[w.length];
       if (!ws) continue;
       const idx = ws.indexOf(w);
