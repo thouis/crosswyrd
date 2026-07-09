@@ -137,7 +137,6 @@ function WordSelector({
   }, [wordsFilteredByTiles, selectedTiles, optionsSet]);
 
   const wordViabilities = useWordViabilities(
-    dictionary,
     wave,
     puzzle,
     possibleWords,

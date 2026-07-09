@@ -138,6 +138,35 @@ test('addWords returns empty array when nothing is inserted', () => {
 });
 
 // ---------------------------------------------------------------------------
+// addWords — maintains sorted order (minor 9)
+// ---------------------------------------------------------------------------
+
+test('addWords keeps the per-length list sorted after inserting into the middle', () => {
+  const idx = buildWordIndex(['act', 'zoo'], ENGLISH);
+  addWords(idx, ['dog'], ENGLISH);
+  expect(idx.words[3]).toEqual(['act', 'dog', 'zoo']);
+});
+
+test('addWords keeps the per-length list sorted across multiple incremental inserts', () => {
+  const idx = buildWordIndex(['cat'], ENGLISH);
+  addWords(idx, ['zoo'], ENGLISH);
+  addWords(idx, ['act'], ENGLISH);
+  addWords(idx, ['bat'], ENGLISH);
+  expect(idx.words[3]).toEqual([...idx.words[3]].sort());
+  expect(idx.words[3]).toEqual(['act', 'bat', 'cat', 'zoo']);
+});
+
+test('addWords duplicate detection still works after incremental inserts disturb order', () => {
+  const idx = buildWordIndex(['cat'], ENGLISH);
+  addWords(idx, ['zoo'], ENGLISH);
+  addWords(idx, ['act'], ENGLISH);
+  const before = idx.words[3].length;
+  const inserted = addWords(idx, ['act'], ENGLISH);
+  expect(inserted).toEqual([]);
+  expect(idx.words[3].length).toBe(before);
+});
+
+// ---------------------------------------------------------------------------
 // bank-word lifecycle (mirrors WFCWorker's insertedBankWords bookkeeping;
 // the comlink worker itself can't run under jest, so we replicate its
 // add/remove logic against the wordIndex module here)

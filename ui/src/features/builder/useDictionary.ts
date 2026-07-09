@@ -43,10 +43,9 @@ export function mergeWordsIntoDictionary(
   const grouped = _.groupBy(newWords, 'length');
   const newDictionary: DictionaryType = { ...dictionary };
   _.forEach(grouped, (wordsOfLength, len) => {
-    newDictionary[len] = _.sortBy([
-      ...(dictionary[len] ?? []),
-      ...wordsOfLength,
-    ]);
+    newDictionary[len] = _.sortedUniq(
+      _.sortBy([...(dictionary[len] ?? []), ...wordsOfLength])
+    );
   });
   return newDictionary;
 }
