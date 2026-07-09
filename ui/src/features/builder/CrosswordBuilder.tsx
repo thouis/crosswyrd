@@ -123,7 +123,6 @@ export default function CrosswordBuilder({ grid }: Props) {
     setWaveState,
     busy: WFCBusy,
     wordIndexReady,
-    resetWordIndex,
     WFCWorkerRef,
   } = useWaveFunctionCollapse(puzzle, wordBankWords);
   const {

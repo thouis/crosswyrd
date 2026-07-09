@@ -173,7 +173,6 @@ interface ReturnType {
   setWaveState: (wave: WaveType, puzzle: CrosswordPuzzleType) => void;
   busy: boolean;
   wordIndexReady: boolean;
-  resetWordIndex: () => Promise<void>;
   WFCWorkerRef: MutableRefObject<Remote<WFCWorkerAPIType> | null>;
 }
 
@@ -331,13 +330,6 @@ export default function useWaveFunctionCollapse(
     [dispatch]
   );
 
-  const resetWordIndex = useCallback((): Promise<void> => {
-    setWordIndexReady(false);
-    return (WFCWorkerRef.current?.resetIndex() ?? Promise.resolve()).then(() =>
-      setWordIndexReady(true)
-    );
-  }, []);
-
   return {
     wave,
     updateWaveWithTileUpdates,
@@ -345,7 +337,6 @@ export default function useWaveFunctionCollapse(
     setWaveState,
     busy,
     wordIndexReady,
-    resetWordIndex,
     WFCWorkerRef,
   };
 }

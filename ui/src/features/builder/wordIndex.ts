@@ -1,3 +1,5 @@
+import _ from 'lodash';
+
 import { Alphabet, ENGLISH } from './Alphabet';
 
 export interface WordIndexType {
@@ -68,9 +70,12 @@ export function addWords(index: WordIndexType, newWords: string[], alphabet: Alp
     }
 
     const ws = index.words[len];
-    if (ws.includes(word)) continue; // skip duplicate
+    // Maintain sorted order on insert (buildWordIndex sorts each length's
+    // list; addWords must keep that invariant on the incremental path).
+    const idx = _.sortedIndexOf(ws, word);
+    if (idx >= 0) continue; // skip duplicate
 
-    ws.push(word);
+    ws.splice(_.sortedIndex(ws, word), 0, word);
     inserted.push(word);
   }
 

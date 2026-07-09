@@ -34,3 +34,15 @@ test('does not mutate the input dictionary', () => {
   expect(base[3]).toEqual(['cat']);
   expect(base[4]).toBeUndefined();
 });
+
+test('adding a word already present does not create a duplicate entry', () => {
+  const base: DictionaryType = { 3: ['act', 'cat'] };
+  const merged = mergeWordsIntoDictionary(base, ['cat']);
+  expect(merged[3]).toEqual(['act', 'cat']);
+});
+
+test('adding several words including duplicates within the same call dedupes', () => {
+  const base: DictionaryType = { 3: ['cat'] };
+  const merged = mergeWordsIntoDictionary(base, ['cat', 'act', 'act']);
+  expect(merged[3]).toEqual(['act', 'cat']);
+});

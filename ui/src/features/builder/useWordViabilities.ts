@@ -10,7 +10,6 @@ import {
   selectBannedWords,
 } from './builderSlice';
 import { LocationType, puzzleCannotBeFilled } from './CrosswordBuilder';
-import { DictionaryType } from './useDictionary';
 import { SelectedTilesStateType } from './useTileSelection';
 import { WaveType } from './useWaveFunctionCollapse';
 import { WFCWorkerAPIType } from './WFCWorker.worker';
@@ -60,7 +59,6 @@ export function wordViabilitiesReducer(
 }
 
 export default function useWordViabilities(
-  dictionary: DictionaryType,
   wave: WaveType | null,
   puzzle: CrosswordPuzzleType,
   words: string[],
@@ -95,6 +93,19 @@ export default function useWordViabilities(
     }
   }, [puzzle.version, selectedTilesState, fillAssistActive]);
 
+  // Also clear cached viabilities when the banned-word list changes: entries
+  // already computed under the old list are not otherwise invalidated (in
+  // practice banning usually triggers a refill that bumps the version, so
+  // exposure is small, but this closes the gap directly).
+  const isFirstBannedWordsRender = useRef(true);
+  useEffect(() => {
+    if (isFirstBannedWordsRender.current) {
+      isFirstBannedWordsRender.current = false;
+      return;
+    }
+    dispatch({ type: 'clearState' });
+  }, [bannedWords]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Iteratively check the viability of the provided words
   const running = useRef(false);
   useInterval(
@@ -105,44 +116,51 @@ export default function useWordViabilities(
         if (!WFCWorkerRef.current || running.current || !selectedTilesState)
           return;
         running.current = true;
+        try {
+          // Add a new viability entry in the "Checking" state
+          const word = words[_.size(wordViabilities)];
+          dispatch({ type: 'updateWordState', word, state: 'Checking' });
 
-        // Add a new viability entry in the "Checking" state
-        const word = words[_.size(wordViabilities)];
-        dispatch({ type: 'updateWordState', word, state: 'Checking' });
+          // Compute a new wave in the background. Note: this shares the
+          // single WFC worker with interactive tile updates, and comlink
+          // messages are FIFO, so this call can queue ahead of a keystroke's
+          // withTileUpdates; the `running` gate above bounds queued checks to
+          // one in flight, keeping the latency impact bounded.
+          const newWave = await WFCWorkerRef.current.withTileUpdates(
+            wave,
+            puzzle,
+            _.map(selectedTilesState.locations, ({ row, column }, index) => ({
+              row,
+              column,
+              value: word[index] as LetterType,
+            })),
+            bannedWords
+          );
 
-        // Compute a new wave in the background
-        const newWave = await WFCWorkerRef.current.withTileUpdates(
-          wave,
-          puzzle,
-          _.map(selectedTilesState.locations, ({ row, column }, index) => ({
-            row,
-            column,
-            value: word[index] as LetterType,
-          })),
-          bannedWords
-        );
-
-        if (
-          shouldRunViabilityChecks(
-            puzzle.version,
-            currentPuzzleVersion.current,
-            selectedTilesState.locations,
-            currentSelectedLocations.current,
-            fillAssistActive
+          if (
+            shouldRunViabilityChecks(
+              puzzle.version,
+              currentPuzzleVersion.current,
+              selectedTilesState.locations,
+              currentSelectedLocations.current,
+              fillAssistActive
+            )
           )
-        )
-          // Update the viability entry's state given the results (if the
-          // puzzle version and selected tiles are still the same--otherwise,
-          // discard results)
-          dispatch({
-            type: 'updateWordState',
-            word,
-            state: puzzleCannotBeFilled(puzzle, newWave)
-              ? 'Not Viable'
-              : 'Viable',
-          });
-
-        running.current = false;
+            // Update the viability entry's state given the results (if the
+            // puzzle version and selected tiles are still the same--otherwise,
+            // discard results)
+            dispatch({
+              type: 'updateWordState',
+              word,
+              state: puzzleCannotBeFilled(puzzle, newWave)
+                ? 'Not Viable'
+                : 'Viable',
+            });
+        } finally {
+          // Always clear the running gate, even if the worker call rejects
+          // (e.g. worker restart, comlink error), so checks can't wedge.
+          running.current = false;
+        }
       };
 
       checkViability();
