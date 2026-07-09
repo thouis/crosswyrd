@@ -108,23 +108,6 @@ function wordsNotInDictionary(
   return _.reject(allEnteredWords, (word) => inDictionary(dictionary, word));
 }
 
-function computeEntropy(options: LetterType[]): number {
-  // TODO: Make this computeWeightedEntropy, and use scrabble weights
-  // Adapted from this numpy code
-  //value,counts = np.unique(labels, return_counts=True)
-  //norm_counts = counts / counts.sum()
-  //base = e if base is None else base
-  //return -(norm_counts * np.log(norm_counts)/np.log(base)).sum()
-
-  const counts = _.values(_.countBy(options));
-  const countsSum = _.sum(counts);
-  const normalizedCounts = _.map(counts, (count) => count / countsSum);
-  const entropy = -_.sum(
-    _.map(normalizedCounts, (count) => count * Math.log(count))
-  );
-  return entropy;
-}
-
 export function waveFromPuzzle(puzzle: CrosswordPuzzleType, alphabetLetters: string[] = [...ALL_LETTERS]): WaveType {
   // Returns a wave given the pattern of the puzzle. The puzzle values are NOT
   // transferred, only whether the value is solid or not is taken into account.
