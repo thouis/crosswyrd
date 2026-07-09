@@ -1,14 +1,22 @@
 import type { CrosswordPuzzleType } from './builderSlice';
 import type { TileUpdateType, WaveType } from './useWaveFunctionCollapse';
 
-// Returns a copy of `wave` where, for each updated letter tile, the tile
-// itself and every still-empty tile in the slots (across and down) running
-// through it are marked unfillable (options = []). Used when a tile update
-// produces a contradiction: the half-propagated masks from the engine are
-// meaningless, so we keep the last consistent wave, flag the offending cell,
-// and blank the stale letter hints in its slots (rendered red). Tiles that
-// already hold letters elsewhere in those slots are left untouched so valid
-// crossing words don't turn red.
+// Returns a copy of `wave` where, for each updated tile, the still-empty
+// tiles in the slots (across and down) running through it are marked
+// unfillable (options = []). Used when a tile update produces a
+// contradiction: the half-propagated masks from the engine are meaningless,
+// so we keep the last consistent wave and blank the stale letter hints in
+// the affected slots (rendered red). Tiles that already hold letters
+// elsewhere in those slots are left untouched so valid crossing words don't
+// turn red. Three cases, per update value:
+//   - letter: mark the typed cell itself plus empty cells in its slots.
+//   - black: sync the wave to the new topology (solid = true, options = [])
+//     and mark empty cells in the slots that ran through the cell before it
+//     went black (walked from each of its four neighbors), so the user sees
+//     a visible red indication of the affected slots.
+//   - empty (deletion): don't mark the deleted cell itself, but a deletion
+//     inside a contradiction batch means hints in its slots are stale too,
+//     so blank the still-empty cells in its slots.
 //
 // `puzzle` must already reflect the tile updates.
 export function waveWithUnfillableUpdates(
@@ -29,10 +37,7 @@ export function waveWithUnfillableUpdates(
     el.options = [];
     el.entropy = 0;
   };
-
-  for (const { row, column, value } of tileUpdates) {
-    if (value === 'black' || value === 'empty') continue;
-    mark(row, column);
+  const markEmptySlotsThrough = (row: number, column: number) => {
     for (const [dr, dc] of [[0, 1], [1, 0]] as const) {
       for (const dir of [1, -1]) {
         let r = row + dr * dir;
@@ -44,6 +49,23 @@ export function waveWithUnfillableUpdates(
         }
       }
     }
+  };
+
+  for (const { row, column, value } of tileUpdates) {
+    if (value === 'black') {
+      const el = result.elements[row][column];
+      el.solid = true;
+      el.options = [];
+      el.entropy = 0;
+      markEmptySlotsThrough(row, column);
+      continue;
+    }
+    if (value === 'empty') {
+      markEmptySlotsThrough(row, column);
+      continue;
+    }
+    mark(row, column);
+    markEmptySlotsThrough(row, column);
   }
   return result;
 }

@@ -87,21 +87,96 @@ describe('waveWithUnfillableUpdates', () => {
     expect(result.elements[0][3].options).toEqual([]); // empty in slot
   });
 
-  it('ignores black and empty tile updates', () => {
-    const puzzle = makePuzzle(['  ', '  ']);
-    const wave = makeWave(2);
+  it('black update: marks the cell solid/empty-options and blanks empty cells in adjacent runs', () => {
+    // 3x3, all empty. Toggle (1,1) to black.
+    const puzzle = makePuzzle(['   ', ' . ', '   ']);
+    const wave = makeWave(3);
+    const result = waveWithUnfillableUpdates(
+      wave,
+      [{ row: 1, column: 1, value: 'black' }],
+      puzzle,
+      'v2'
+    );
+    // the newly-black cell itself: solid + options emptied
+    expect(result.elements[1][1].solid).toBe(true);
+    expect(result.elements[1][1].options).toEqual([]);
+    expect(result.elements[1][1].entropy).toBe(0);
+    // across run through (1,1): (1,0) and (1,2) are empty -> blanked
+    expect(result.elements[1][0].options).toEqual([]);
+    expect(result.elements[1][2].options).toEqual([]);
+    // down run through (1,1): (0,1) and (2,1) are empty -> blanked
+    expect(result.elements[0][1].options).toEqual([]);
+    expect(result.elements[2][1].options).toEqual([]);
+    // corners untouched
+    expect(result.elements[0][0].options).toEqual(['a', 'b', 'c']);
+    expect(result.elements[0][2].options).toEqual(['a', 'b', 'c']);
+    expect(result.elements[2][0].options).toEqual(['a', 'b', 'c']);
+    expect(result.elements[2][2].options).toEqual(['a', 'b', 'c']);
+  });
+
+  it('black update: lettered cells in the adjacent runs are left untouched', () => {
+    const puzzle = makePuzzle([
+      'a  ', //
+      ' . ', //
+      '  b',
+    ]);
+    const wave = makeWave(3);
+    const result = waveWithUnfillableUpdates(
+      wave,
+      [{ row: 1, column: 1, value: 'black' }],
+      puzzle,
+      'v'
+    );
+    // (0,1) and (1,0) are empty in their runs through (1,1) -> blanked
+    expect(result.elements[0][1].options).toEqual([]);
+    expect(result.elements[1][0].options).toEqual([]);
+    // 'a' at (0,0) and 'b' at (2,2) are not in either run through (1,1)
+    expect(result.elements[0][0].options).toEqual(['a', 'b', 'c']);
+    expect(result.elements[2][2].options).toEqual(['a', 'b', 'c']);
+  });
+
+  it('empty update (deletion): does not mark the deleted cell directly, but blanks empty slot-mates', () => {
+    // 3x3, all empty, no black squares -> full-width/height slots. Delete (0,1).
+    const puzzle = makePuzzle(['   ', '   ', '   ']);
+    const wave = makeWave(3);
+    const result = waveWithUnfillableUpdates(
+      wave,
+      [{ row: 0, column: 1, value: 'empty' }],
+      puzzle,
+      'v'
+    );
+    // across run through (0,1): (0,0) and (0,2) are empty -> blanked
+    expect(result.elements[0][0].options).toEqual([]);
+    expect(result.elements[0][2].options).toEqual([]);
+    // down run through (0,1): (1,1) and (2,1) are empty -> blanked
+    expect(result.elements[1][1].options).toEqual([]);
+    expect(result.elements[2][1].options).toEqual([]);
+    // cells outside those runs untouched
+    expect(result.elements[1][0].options).toEqual(['a', 'b', 'c']);
+    expect(result.elements[2][2].options).toEqual(['a', 'b', 'c']);
+  });
+
+  it('mixed batch: black and letter updates behave per-update', () => {
+    const puzzle = makePuzzle([
+      'x  ', //
+      ' . ', //
+      '   ',
+    ]);
+    const wave = makeWave(3);
     const result = waveWithUnfillableUpdates(
       wave,
       [
-        { row: 0, column: 0, value: 'black' },
-        { row: 1, column: 1, value: 'empty' },
+        { row: 0, column: 0, value: 'x' },
+        { row: 1, column: 1, value: 'black' },
       ],
       puzzle,
       'v'
     );
-    for (let r = 0; r < 2; r++)
-      for (let c = 0; c < 2; c++)
-        expect(result.elements[r][c].options).toEqual(['a', 'b', 'c']);
+    // letter update: typed cell marked red
+    expect(result.elements[0][0].options).toEqual([]);
+    // black update: cell marked solid + options emptied
+    expect(result.elements[1][1].solid).toBe(true);
+    expect(result.elements[1][1].options).toEqual([]);
   });
 
   it('does not mutate the input wave', () => {
