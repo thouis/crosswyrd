@@ -250,8 +250,7 @@ export default function Tiles({
         )
     );
   }, [wave, puzzle]);
-  const scale =
-    puzzle.tiles.length === 15 ? 1 : puzzle.tiles.length === 10 ? 3 / 2 : 2.97;
+  const scale = 15 / puzzle.tiles.length;
 
   // Make special cases for handling clicking tiles so that we can make use of
   // memoizing the tile components (reduces render time from ~14ms to ~7ms)
