@@ -168,22 +168,24 @@ export default function CrosswordBuilder({ grid }: Props) {
   );
 
   const dispatch = useDispatch();
+  // Set right before an action that may re-select tiles but that shouldn't
+  // yank the user over to the Fill tab (undo/redo/auto-fill); BuilderTabs
+  // consumes and clears this itself.
+  const preserveTabRef = useRef(false);
   const stepBack = useCallback(
     (times: number = 1) => {
       const previousState = popStateHistory(times);
       if (!previousState) return;
+      preserveTabRef.current = true;
       setWaveState(previousState.wave, previousState.puzzle);
       dispatch(setPuzzleState(previousState.puzzle));
-      // Only restore/select tiles when on the Fill tab--otherwise, this
-      // steals focus away from whichever tab the user is on (e.g. Word Bank)
-      if (currentTab === 0) {
-        if (previousState.selectedTilesState)
-          updateSelection(
-            previousState.selectedTilesState.primaryLocation,
-            previousState.selectedTilesState.direction
-          );
-        else if (!autoFillRunning) selectBestNext(previousState);
-      }
+      if (previousState.selectedTilesState)
+        updateSelection(
+          previousState.selectedTilesState.primaryLocation,
+          previousState.selectedTilesState.direction
+        );
+      else if (!autoFillRunning && currentTab === 0)
+        selectBestNext(previousState);
       return previousState;
     },
     [
@@ -199,16 +201,21 @@ export default function CrosswordBuilder({ grid }: Props) {
   const stepForward = useCallback(() => {
     const nextState = popStateFuture();
     if (!nextState) return;
+    preserveTabRef.current = true;
     setWaveState(nextState.wave, nextState.puzzle);
     dispatch(setPuzzleState(nextState.puzzle));
-    if (currentTab === 0 && nextState.selectedTilesState)
+    if (nextState.selectedTilesState)
       updateSelection(
         nextState.selectedTilesState.primaryLocation,
         nextState.selectedTilesState.direction
       );
     return nextState;
-  }, [dispatch, setWaveState, popStateFuture, updateSelection, currentTab]);
-  const { runAutoFill, stopAutoFill, autoFillError } = useAutoFill(
+  }, [dispatch, setWaveState, popStateFuture, updateSelection]);
+  const {
+    runAutoFill: runAutoFillInner,
+    stopAutoFill,
+    autoFillError,
+  } = useAutoFill(
     puzzle,
     autoFillRunning,
     setAutoFillRunning,
@@ -218,6 +225,10 @@ export default function CrosswordBuilder({ grid }: Props) {
     wordBankWords,
     handleUnknownWords
   );
+  const runAutoFill = useCallback(() => {
+    preserveTabRef.current = true;
+    runAutoFillInner();
+  }, [runAutoFillInner]);
 
   // Update the wave with changes to the puzzle
   const prevPuzzleVersion = useRef(puzzle.version);
@@ -481,6 +492,7 @@ export default function CrosswordBuilder({ grid }: Props) {
               <BuilderTabs
                 currentTab={currentTab}
                 tilesSelected={tilesSelected}
+                preserveTabRef={preserveTabRef}
                 clearSelection={clearSelection}
                 wordSelector={
                   <WordSelector

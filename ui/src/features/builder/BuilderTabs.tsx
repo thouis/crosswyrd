@@ -2,7 +2,7 @@
 import Tabs from '@mui/material/Tabs';
 import Tab from '@mui/material/Tab';
 import Box from '@mui/material/Box';
-import React, { useLayoutEffect } from 'react';
+import React, { MutableRefObject, useLayoutEffect } from 'react';
 import { useDispatch } from 'react-redux';
 
 import { setCurrentTab } from './builderSlice';
@@ -47,6 +47,7 @@ function a11yProps(index: number) {
 interface Props {
   currentTab: number;
   tilesSelected: boolean;
+  preserveTabRef: MutableRefObject<boolean>;
   clearSelection: () => void;
   wordSelector: React.ReactNode;
   wordBank: React.ReactNode;
@@ -57,6 +58,7 @@ interface Props {
 function BuilderTabs({
   currentTab,
   tilesSelected,
+  preserveTabRef,
   clearSelection,
   wordSelector,
   wordBank,
@@ -65,10 +67,13 @@ function BuilderTabs({
 }: Props) {
   const dispatch = useDispatch();
 
-  // Set tab to "Fill" when tiles are selected
+  // Set tab to "Fill" when tiles are selected, unless the selection came from
+  // an action (undo/redo/auto-fill) that should leave the current tab alone
   useLayoutEffect(() => {
-    if (tilesSelected && currentTab === 1) dispatch(setCurrentTab(0));
-  }, [tilesSelected, dispatch, currentTab]);
+    const preserve = preserveTabRef.current;
+    preserveTabRef.current = false;
+    if (tilesSelected && currentTab === 1 && !preserve) dispatch(setCurrentTab(0));
+  }, [tilesSelected, dispatch, currentTab, preserveTabRef]);
 
   const handleChange = (event: React.SyntheticEvent, newCurrentTab: number) => {
     // Clear selection if moved tab to "Word Bank"
