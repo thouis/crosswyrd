@@ -174,13 +174,16 @@ export default function CrosswordBuilder({ grid }: Props) {
       if (!previousState) return;
       setWaveState(previousState.wave, previousState.puzzle);
       dispatch(setPuzzleState(previousState.puzzle));
-      if (previousState.selectedTilesState)
-        updateSelection(
-          previousState.selectedTilesState.primaryLocation,
-          previousState.selectedTilesState.direction
-        );
-      else if (!autoFillRunning && currentTab === 0)
-        selectBestNext(previousState);
+      // Only restore/select tiles when on the Fill tab--otherwise, this
+      // steals focus away from whichever tab the user is on (e.g. Word Bank)
+      if (currentTab === 0) {
+        if (previousState.selectedTilesState)
+          updateSelection(
+            previousState.selectedTilesState.primaryLocation,
+            previousState.selectedTilesState.direction
+          );
+        else if (!autoFillRunning) selectBestNext(previousState);
+      }
       return previousState;
     },
     [
@@ -198,13 +201,13 @@ export default function CrosswordBuilder({ grid }: Props) {
     if (!nextState) return;
     setWaveState(nextState.wave, nextState.puzzle);
     dispatch(setPuzzleState(nextState.puzzle));
-    if (nextState.selectedTilesState)
+    if (currentTab === 0 && nextState.selectedTilesState)
       updateSelection(
         nextState.selectedTilesState.primaryLocation,
         nextState.selectedTilesState.direction
       );
     return nextState;
-  }, [dispatch, setWaveState, popStateFuture, updateSelection]);
+  }, [dispatch, setWaveState, popStateFuture, updateSelection, currentTab]);
   const { runAutoFill, stopAutoFill, autoFillError } = useAutoFill(
     puzzle,
     autoFillRunning,
