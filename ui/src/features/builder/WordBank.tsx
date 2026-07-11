@@ -245,7 +245,7 @@ function WordBank({ wave, puzzle, setWordLocationsGrid, words, setWords }: Props
         .map((w) =>
           _.join(
             _.take(
-              _.filter(_.toLower(w), (c) => _.includes(ALL_LETTERS, c)),
+              _.filter(_.toLower(w), (c) => alphabetSet.has(c)),
               maxLen
             ),
             ''
