@@ -4,6 +4,10 @@ import {
   Button,
   Chip,
   ClickAwayListener,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   IconButton,
   Input,
   InputAdornment,
@@ -11,12 +15,14 @@ import {
   ListItem,
   ListItemButton,
   ListItemText,
+  TextField,
 } from '@mui/material';
 import BlockIcon from '@mui/icons-material/Block';
 import CreateIcon from '@mui/icons-material/Create';
 import DeleteIcon from '@mui/icons-material/Delete';
 import DoneIcon from '@mui/icons-material/Done';
 import LockIcon from '@mui/icons-material/Lock';
+import PlaylistAddIcon from '@mui/icons-material/PlaylistAdd';
 import React, { useEffect, useMemo, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 
@@ -164,6 +170,8 @@ interface Props {
 
 function WordBank({ wave, puzzle, setWordLocationsGrid, words, setWords }: Props) {
   const [currentWord, setCurrentWord] = useState('');
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkText, setBulkText] = useState('');
 
   const draggedWord = useSelector(selectDraggedWord);
   const lockedSlots = useSelector(selectLockedSlots);
@@ -227,6 +235,26 @@ function WordBank({ wave, puzzle, setWordLocationsGrid, words, setWords }: Props
   const mkHandleDeleteEntry = (index) => () => {
     setWords(_.sortBy(_.without(words, words[index])));
   };
+  const handleBulkImport = () => {
+    const maxLen = puzzle.tiles.length;
+    const newWords = _.uniq(
+      bulkText
+        .split(/[\s,;|/\\]+/)
+        .map((w) =>
+          _.join(
+            _.take(
+              _.filter(_.toLower(w), (c) => _.includes(ALL_LETTERS, c)),
+              maxLen
+            ),
+            ''
+          )
+        )
+        .filter((w) => w.length > 0)
+    );
+    setWords(_.sortBy(_.uniq([...words, ...newWords])));
+    setBulkText('');
+    setBulkOpen(false);
+  };
   const handleMouseOut = () => {
     const entry = _.find(wordBank, ['word', draggedWord]);
     if (draggedWord && entry)
@@ -237,7 +265,10 @@ function WordBank({ wave, puzzle, setWordLocationsGrid, words, setWords }: Props
   return (
     <ClickAwayListener onClickAway={handleClickToStopDragging}>
       <div className="word-bank-container" onClick={handleClickToStopDragging}>
-        <div className="word-bank-input-container">
+        <div
+          className="word-bank-input-container"
+          style={{ display: 'flex', alignItems: 'center' }}
+        >
           <Input
             placeholder="Write a word"
             style={{ width: 170 }}
@@ -260,9 +291,47 @@ function WordBank({ wave, puzzle, setWordLocationsGrid, words, setWords }: Props
             disabled={!currentWord}
             onClick={handleInsertCurrentWord}
           >
-            Add Word
+            Add
+          </Button>
+          <Button
+            size="small"
+            style={{ marginLeft: 'auto' }}
+            variant="outlined"
+            startIcon={<PlaylistAddIcon />}
+            onClick={() => setBulkOpen(true)}
+          >
+            Bulk
           </Button>
         </div>
+        <Dialog
+          open={bulkOpen}
+          onClose={() => setBulkOpen(false)}
+          fullWidth
+          maxWidth="sm"
+        >
+          <DialogTitle>Bulk import words</DialogTitle>
+          <DialogContent>
+            <TextField
+              autoFocus
+              multiline
+              fullWidth
+              minRows={8}
+              placeholder="Paste words separated by spaces, commas, or newlines"
+              value={bulkText}
+              onChange={(e) => setBulkText(e.target.value)}
+            />
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setBulkOpen(false)}>Cancel</Button>
+            <Button
+              variant="contained"
+              disabled={!bulkText.trim()}
+              onClick={handleBulkImport}
+            >
+              Import
+            </Button>
+          </DialogActions>
+        </Dialog>
         <Box
           className="word-bank-list-box-container"
           sx={{ width: '100%', maxWidth: 360, bgcolor: 'background.paper' }}
