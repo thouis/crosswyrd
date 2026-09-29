@@ -19,6 +19,7 @@ import {
   setWaveState,
   CrosswordPuzzleType,
   setFillAssistActive,
+  clearLockedSlots,
 } from '../builder/builderSlice';
 
 import { styled } from '@mui/material/styles';
@@ -173,6 +174,7 @@ export default function ImportPuzzle({ onImport }: { onImport: () => void }) {
           dispatch(setPuzzleState(puzzle));
           dispatch(setWaveState(wave));
           dispatch(setClueGrid(clueGrid));
+          dispatch(clearLockedSlots());
           dispatch(
             setPublishInfo({
               // Generally preserve publish info if present to allow importing
